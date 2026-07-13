@@ -1,0 +1,329 @@
+import SwiftUI
+import AppKit
+
+/// Reports the natural height of the home content so the scroll area can size to it.
+private struct HomeContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// The root panel shown from the menu bar item.
+struct MenuContentView: View {
+    @Environment(RunnerStore.self) private var store
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
+
+    enum Route: Equatable {
+        case home
+        case register
+        case updates
+        case log
+    }
+    @State private var route: Route = .home
+    @State private var homeContentHeight: CGFloat = 320
+
+    var body: some View {
+        @Bindable var store = store
+        VStack(spacing: 0) {
+            header
+            Divider()
+
+            if let banner = store.banner {
+                BannerView(message: banner) { store.banner = nil }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+                    .transition(.opacity)
+            }
+
+            content
+                .frame(maxWidth: .infinity)
+
+            Divider()
+            footer
+        }
+        .frame(width: 388)
+        .animation(.easeInOut(duration: 0.15), value: store.banner)
+        .task { await store.refreshAll() }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "gearshape.2.fill")
+                .foregroundStyle(.tint)
+            Text(headerTitle)
+                .font(.headline)
+            Spacer()
+            if route == .home {
+                GHAuthChip(auth: store.ghAuth)
+                Button {
+                    Task { await store.refreshAll() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh (⌘R)")
+                .keyboardShortcut("r", modifiers: .command)
+                .accessibilityLabel("Refresh")
+            } else {
+                Button {
+                    withAnimation { route = .home }
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private var headerTitle: String {
+        switch route {
+        case .home: return "Runner Menu"
+        case .register: return "Add / Register Runner"
+        case .updates: return "Runner Updates"
+        case .log: return "Live Log"
+        }
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private var content: some View {
+        switch route {
+        case .home:
+            homeContent
+        case .register:
+            RegisterRunnerView { withAnimation { route = .home } }
+        case .updates:
+            if let runner = store.selectedRunner {
+                UpdatesView(instance: runner)
+            } else { missingRunner }
+        case .log:
+            if let runner = store.selectedRunner {
+                LogConsoleView(instance: runner)
+            } else { missingRunner }
+        }
+    }
+
+    private var missingRunner: some View {
+        ContentUnavailableView("No runner selected", systemImage: "questionmark.folder")
+            .frame(height: 220)
+    }
+
+    @ViewBuilder
+    private var homeContent: some View {
+        if store.runners.isEmpty {
+            emptyState
+        } else {
+            ScrollView {
+                VStack(spacing: 8) {
+                    if store.runners.count >= 2 {
+                        batchBar
+                    }
+                    ForEach(store.runners) { instance in
+                        RunnerRowView(
+                            instance: instance,
+                            isSelected: instance.id == store.selectedRunner?.id
+                        )
+                        .onTapGesture { store.selectedRunnerID = instance.id }
+                    }
+
+                    if let selected = store.selectedRunner {
+                        Divider().padding(.vertical, 2)
+                        RunnerDetailView(
+                            instance: selected,
+                            showLog: { withAnimation { route = .log } },
+                            showUpdates: { withAnimation { route = .updates } }
+                        )
+                    }
+                }
+                .padding(12)
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: HomeContentHeightKey.self, value: proxy.size.height)
+                })
+            }
+            // A ScrollView reports a zero ideal height, which would collapse the
+            // MenuBarExtra window to nothing. Measure the content and size the scroll
+            // area to it (floored so it never collapses, capped so it can still scroll).
+            .frame(height: min(max(homeContentHeight, 140), 460))
+            .onPreferenceChange(HomeContentHeightKey.self) { homeContentHeight = $0 }
+        }
+    }
+
+    /// Summary + batch actions shown when multiple runners are managed.
+    private var batchBar: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 5) {
+                statPill(store.runners.count, "runners", .secondary)
+                statPill(store.runningRunners.count, "running", .green)
+                if store.busyCount > 0 { statPill(store.busyCount, "busy", .orange) }
+                Spacer()
+                if store.isInFlight("update-all") {
+                    ProgressView().controlSize(.small)
+                }
+                batchMenu
+            }
+            if store.totalCPU > 0 || store.totalMemoryMB > 0 {
+                HStack(spacing: 4) {
+                    Text(String(format: "CPU %.0f%%  ·  %.0f MB total", store.totalCPU, store.totalMemoryMB))
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, 2)
+        .padding(.bottom, 2)
+    }
+
+    private func statPill(_ value: Int, _ label: String, _ color: Color) -> some View {
+        HStack(spacing: 3) {
+            Text("\(value)").font(.caption.weight(.semibold)).foregroundStyle(color)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 7).padding(.vertical, 2)
+        .background(color.opacity(0.12), in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(value) \(label)")
+    }
+
+    private var batchMenu: some View {
+        Group {
+            Menu {
+                Button { store.startAll() } label: { Label("Start All", systemImage: "play.fill") }
+                    .disabled(store.startableRunners.isEmpty)
+                Button { store.stopAll() } label: { Label("Stop All", systemImage: "stop.fill") }
+                    .disabled(store.runningRunners.isEmpty)
+                Button { store.stopAll(force: true) } label: { Label("Force Stop All", systemImage: "xmark.octagon") }
+                    .disabled(store.runningRunners.isEmpty)
+                Divider()
+                Button { Task { await store.updateAll() } } label: {
+                    Label("Check & Update All", systemImage: "arrow.down.circle")
+                }
+                .disabled(store.isInFlight("update-all"))
+            } label: {
+                Label("All Actions", systemImage: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Start, stop, or update all runners at once")
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "shippingbox")
+                .font(.system(size: 34))
+                .foregroundStyle(.secondary)
+            Text("No runners yet")
+                .font(.headline)
+            Text("Add an existing `actions-runner` folder, or register a new runner against one of your repositories.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                withAnimation { route = .register }
+            } label: {
+                Label("Add Runner", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            if !store.ghAuth.authenticated {
+                Text(store.ghAuth.message ?? "Sign in with `gh auth login` to enable GitHub features.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Footer
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation { route = .register }
+            } label: {
+                Label("Add", systemImage: "plus")
+            }
+            .help("Add or register a runner")
+
+            Button {
+                store.selectedRunnerID = store.selectedRunner?.id
+                withAnimation { route = .updates }
+            } label: {
+                Label("Updates", systemImage: "arrow.down.circle")
+            }
+            .help("Check for runner updates (⌘U)")
+            .keyboardShortcut("u", modifiers: .command)
+            .disabled(store.selectedRunner == nil)
+
+            Button {
+                openMainWindow()
+            } label: {
+                Label("Open Window", systemImage: "macwindow")
+            }
+            .help("Open the full window (⌘N)")
+            .keyboardShortcut("n", modifiers: .command)
+
+            Spacer()
+
+            Button {
+                openSettingsWindow()
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .help("Settings (⌘,)")
+            .keyboardShortcut(",", modifiers: .command)
+
+            Button(role: .destructive) {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Label("Quit", systemImage: "power")
+            }
+            .help("Quit Runner Menu (⌘Q)")
+            .keyboardShortcut("q", modifiers: .command)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    /// Open the main window and force it to the front (accessory apps open it behind).
+    private func openMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: RunnerMenuApp.windowID)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            NSApp.activate(ignoringOtherApps: true)
+            let window = NSApp.windows.first { w in
+                (w.identifier?.rawValue ?? "").contains(RunnerMenuApp.windowID) || w.title == "Runner Menu"
+            }
+            window?.makeKeyAndOrderFront(nil)
+            window?.orderFrontRegardless()
+        }
+    }
+
+    /// Open Settings and force it to the front. A menu-bar (`.accessory`) app doesn't
+    /// activate on its own, so `openSettings()` alone opens the window *behind* other
+    /// apps — it looks like "nothing happened". We activate and order it front.
+    private func openSettingsWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openSettings()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            NSApp.activate(ignoringOtherApps: true)
+            let settingsWindow = NSApp.windows.first { window in
+                let id = window.identifier?.rawValue ?? ""
+                return id.contains("Settings") || window.title == "Runner Menu Settings"
+            }
+            settingsWindow?.makeKeyAndOrderFront(nil)
+            settingsWindow?.orderFrontRegardless()
+        }
+    }
+}

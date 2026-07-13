@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # Deliberately use the base branch's workflow definition so a fork cannot
+  # remove the fork gate in its proposed workflow changes.
+  pull_request_target:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (self-hosted)
+    # Evaluate this before allocating the persistent runner. Fork pull requests
+    # must never execute code on it, even if the repository later accepts forks.
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, repo-ci]
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          # pull_request_target defaults to the base branch. The fork gate above
+          # must pass before we explicitly fetch and execute the same-repo PR.
+          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.ref }}
+
+      - name: Verify ordinary runner isolation
+        run: >-
+          ./scripts/audit-runner-host.sh
+          --expected-repository "$GITHUB_REPOSITORY"
+
+      - name: Run unit tests
+        run: ./run-tests.sh
+
+      - name: Build release configuration
+        run: swift build -c release

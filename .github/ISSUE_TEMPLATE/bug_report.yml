@@ -1,0 +1,63 @@
+name: Bug report
+description: Report reproducible behavior that appears to be incorrect.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Do not include credentials, runner tokens,
+        repository secrets, or unredacted runner logs. Report security issues privately according
+        to SECURITY.md.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest safe set of steps that reproduces the issue.
+      placeholder: |
+        1. Open Runner Menu…
+        2. Select…
+        3. Observe…
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: Runner Menu version or commit
+      placeholder: v1.0.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac architecture
+      placeholder: macOS 14.7, Apple Silicon
+    validations:
+      required: true
+  - type: input
+    id: tools
+    attributes:
+      label: GitHub CLI and Actions Runner versions
+      placeholder: gh 2.x; Runner.Listener 2.x
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add redacted screenshots or logs if they are necessary.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive information
+      options:
+        - label: I removed credentials, tokens, secrets, personal paths, and sensitive job output.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true

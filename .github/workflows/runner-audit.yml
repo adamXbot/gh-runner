@@ -1,0 +1,31 @@
+name: Runner host audit
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-host-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit ordinary CI runner
+    runs-on: [self-hosted, macOS, ARM64, repo-ci]
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check host isolation, registration, and updates
+        run: >-
+          ./scripts/audit-runner-host.sh
+          --expected-repository "$GITHUB_REPOSITORY"
+          --check-updates
