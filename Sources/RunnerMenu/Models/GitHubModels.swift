@@ -98,3 +98,23 @@ struct GHRunner: Codable, Identifiable, Equatable, Sendable {
 
     var labelNames: [String] { labels.map(\.name) }
 }
+
+/// A runner label with its editability (default labels are read-only).
+struct RunnerLabel: Codable, Identifiable, Equatable, Sendable {
+    let name: String
+    let type: String    // "read-only" (default) | "custom"
+
+    var id: String { name }
+    var isCustom: Bool { type == "custom" }
+}
+
+/// Response of the runner-labels endpoint.
+struct RunnerLabelsResponse: Codable, Equatable, Sendable {
+    let totalCount: Int
+    let labels: [RunnerLabel]
+
+    enum CodingKeys: String, CodingKey {
+        case labels
+        case totalCount = "total_count"
+    }
+}

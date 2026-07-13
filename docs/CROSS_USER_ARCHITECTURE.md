@@ -36,6 +36,35 @@ The initial implementation intentionally supports the fixed short account name `
 `UserName` is part of the signed, bundled property list; supporting an arbitrary account later needs
 a separately reviewed enrollment design instead of rewriting that property list at runtime.
 
+First-launch onboarding records whether the operator wants current-account or dedicated-account
+execution. Current-account mode remains fully supported. Dedicated mode is fail-closed until the
+agent is installed and healthy: selecting it never falls back to executing jobs as the administrator.
+The current-account discovery pass searches only locations readable without elevation; future
+dedicated-account discovery is performed by the agent inside its own managed root.
+
+## Current implementation status
+
+Phase 2 is implemented as a deliberately read-only vertical slice:
+
+- `RunnerAgent` is a separate executable embedded at `Contents/Resources/RunnerAgent`.
+- Its `SMAppService` property list lives at `Contents/Library/LaunchDaemons` and declares
+  `UserName=runner`, a fixed Mach service, and a bundle-relative `BundleProgram`.
+- The app reports `not registered`, `requires approval`, `enabled`, and `not found` states and links
+  to Login Items settings.
+- The shared protocol negotiates version 1 and exposes only `health` and `discoverRunners`.
+- Both XPC peers call `setCodeSigningRequirement` before activation. Developer ID builds bind the
+  peer requirement to the fixed identifier and signing Team ID; ad-hoc builds are clearly marked as
+  development-only.
+- The app verifies that the agent reports account `runner`, has a nonzero UID, uses the expected
+  protocol, and returns only records owned by that UID beneath its reported home directory.
+- Dedicated-mode dashboards contain no lifecycle controls, and local controller mutations reject
+  requests while that mode is selected.
+
+Activation requires a standard account with short name `runner`. Apple requires an app containing
+a LaunchDaemon to be properly signed and notarized; it should be installed in `/Applications` so
+the daemon is available before login. The repository's default ad-hoc build validates layout and
+signatures but is not a production-installable LaunchDaemon distribution.
+
 ## Responsibility boundary
 
 ### Runner Menu UI
@@ -105,14 +134,16 @@ logged, persisted, or returned.
 ### Phase 1 — backend seam
 
 Move runner observation and commands behind `RunnerExecutionBackend`. Keep the existing behavior in
-`LocalRunnerExecutionBackend`. This is the current implementation slice and preserves all existing
-same-user behavior.
+`LocalRunnerExecutionBackend`. Implemented; this preserves all existing same-user behavior.
 
 ### Phase 2 — read-only agent
 
 Add the signed helper executable, launchd property list, Service Management UI, XPC protocol version,
-connection validation, health check, runner discovery, status, and bounded log reads. The UI falls
-back to the local backend until the daemon is approved and healthy.
+connection validation, health check, runner discovery, status, and bounded log reads. Current-account
+mode continues to use the local backend; dedicated mode never falls back to it.
+
+Implemented for health and discovery. Bounded diagnostic-log reads remain deferred until the
+agent-owned runner dashboard needs them; no local fallback occurs after dedicated mode is selected.
 
 ### Phase 3 — lifecycle control
 

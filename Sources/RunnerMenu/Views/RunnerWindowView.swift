@@ -12,7 +12,20 @@ struct RunnerWindowView: View {
         case runner(String)
     }
 
+    @ViewBuilder
     var body: some View {
+        if store.onboardingCompleted {
+            if store.executionMode == .dedicatedAccount {
+                DedicatedRunnerAgentView()
+            } else {
+                runnerContent
+            }
+        } else {
+            OnboardingView()
+        }
+    }
+
+    private var runnerContent: some View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section {
@@ -144,6 +157,7 @@ private struct RunnerWindowDetail: View {
     }
     @State private var tab: Tab = .overview
     @State private var confirmUnregister = false
+    @State private var showLabels = false
 
     private var status: RunnerLiveStatus { store.status(for: instance) }
 
@@ -159,6 +173,14 @@ private struct RunnerWindowDetail: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Removes the runner registration from \(instance.scopeLabel ?? "GitHub") and clears its local config. The folder is kept.")
+            }
+            .sheet(isPresented: $showLabels) {
+                NavigationStack {
+                    LabelEditorView(instance: instance)
+                        .frame(width: 420, height: 460)
+                        .navigationTitle("Labels — \(instance.displayName)")
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showLabels = false } } }
+                }
             }
     }
 
@@ -205,6 +227,7 @@ private struct RunnerWindowDetail: View {
                 }
                 if instance.isConfigured {
                     Divider()
+                    Button("Edit Labels…") { showLabels = true }
                     Button("Unregister from GitHub…", role: .destructive) { confirmUnregister = true }
                 }
             } label: {

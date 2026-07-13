@@ -7,11 +7,20 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "RunnerMenu", targets: ["RunnerMenu"])
+        .executable(name: "RunnerMenu", targets: ["RunnerMenu"]),
+        .executable(name: "RunnerAgent", targets: ["RunnerAgent"]),
+        .library(name: "RunnerAgentProtocol", targets: ["RunnerAgentProtocol"])
     ],
     targets: [
+        .target(
+            name: "RunnerAgentProtocol",
+            path: "Sources/RunnerAgentProtocol",
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            linkerSettings: [.linkedFramework("Security")]
+        ),
         .executableTarget(
             name: "RunnerMenu",
+            dependencies: ["RunnerAgentProtocol"],
             path: "Sources/RunnerMenu",
             swiftSettings: [
                 // Pragmatic: use the Swift 5 language mode to avoid strict-concurrency
@@ -20,9 +29,15 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ]
         ),
+        .executableTarget(
+            name: "RunnerAgent",
+            dependencies: ["RunnerAgentProtocol"],
+            path: "Sources/RunnerAgent",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .testTarget(
             name: "RunnerMenuTests",
-            dependencies: ["RunnerMenu"],
+            dependencies: ["RunnerMenu", "RunnerAgent", "RunnerAgentProtocol"],
             path: "Tests/RunnerMenuTests"
         )
     ]

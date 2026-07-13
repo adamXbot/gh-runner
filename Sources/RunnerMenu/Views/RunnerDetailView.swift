@@ -7,6 +7,7 @@ struct RunnerDetailView: View {
     let instance: RunnerInstance
     var showLog: () -> Void
     var showUpdates: () -> Void
+    var showLabels: () -> Void = {}
     /// The window provides Start/Stop and navigation in its toolbar, so those can be
     /// suppressed when this view is embedded there.
     var showsPrimaryControl: Bool = true
@@ -275,6 +276,13 @@ struct RunnerDetailView: View {
                 Label("Updates", systemImage: "arrow.down.circle")
             }
             .controlSize(.small)
+
+            if instance.isConfigured {
+                Button { showLabels() } label: {
+                    Label("Labels", systemImage: "tag")
+                }
+                .controlSize(.small)
+            }
 
             if let url = instance.gitHubURL {
                 Button { NSWorkspace.shared.open(url) } label: {

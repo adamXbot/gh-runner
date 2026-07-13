@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import RunnerAgentProtocol
 
 /// A transient message shown as a banner in the panel.
 struct BannerMessage: Identifiable, Equatable {
@@ -37,6 +38,20 @@ final class RunnerStore {
     var adminRepos: [GHRepo] = []
     var isLoadingRepos = false
     var lastRefresh: Date?
+    var executionMode: RunnerExecutionMode = .currentAccount {
+        didSet {
+            guard isReady else { return }
+            defaults.set(executionMode.rawValue, forKey: Keys.executionMode)
+        }
+    }
+    private(set) var onboardingCompleted = false
+    private(set) var isDiscoveringRunners = false
+    private(set) var discoveredRunners: [RunnerInstance] = []
+    private(set) var runnerAgentRegistrationState: RunnerAgentRegistrationState = RunnerAgentManager.status
+    private(set) var runnerAgentHealth: RunnerAgentHealth?
+    private(set) var agentDiscoveredRunners: [RunnerAgentRunnerRecord] = []
+    private(set) var runnerAgentError: String?
+    private(set) var isWorkingWithRunnerAgent = false
     private(set) var inFlight: Set<String> = []
 
     // MARK: - Settings (persisted in UserDefaults)
@@ -48,6 +63,8 @@ final class RunnerStore {
         static let ghPath = "ghPath"
         static let runnersBase = "runnersBaseDirectory"
         static let jobClickAction = "jobClickAction"
+        static let executionMode = "runnerExecutionMode"
+        static let onboardingCompleted = "runnerOnboardingCompleted"
     }
     private var isReady = false
 
@@ -101,9 +118,11 @@ final class RunnerStore {
     private var github: GitHubClient { GitHubClient(ghPath: ghPath) }
     private var updater: Updater { Updater(github: github) }
     private let backend: any RunnerExecutionBackend
+    private let runnerAgentClient = RunnerAgentClient()
 
     private var pollTask: Task<Void, Never>?
     private var lastAuthCheck: Date?
+    private var lastAgentDiscovery: Date?
     /// When a transient (.starting/.stopping) state should expire and yield to reality.
     private var transientDeadline: [String: Date] = [:]
     /// How long a transient state may persist before the real process state wins.
@@ -143,6 +162,11 @@ final class RunnerStore {
         if let raw = defaults.string(forKey: Keys.jobClickAction), let a = JobClickAction(rawValue: raw) {
             jobClickAction = a
         }
+        if let raw = defaults.string(forKey: Keys.executionMode),
+           let mode = RunnerExecutionMode(rawValue: raw) {
+            executionMode = mode
+        }
+        onboardingCompleted = defaults.bool(forKey: Keys.onboardingCompleted)
     }
 
     // MARK: - Recent job → GitHub / local logs
@@ -165,6 +189,35 @@ final class RunnerStore {
             return base.appendingPathComponent("actions/runs/\(runID)")
         }
         return base.appendingPathComponent("actions")
+    }
+
+    // MARK: - Runner labels
+
+    /// Fetch a runner's labels (default + custom) from GitHub. Nil on error (banner shown).
+    func fetchRunnerLabels(_ instance: RunnerInstance) async -> [RunnerLabel]? {
+        guard let cfg = instance.config, let target = GHTarget(scope: cfg.scope) else {
+            banner = BannerMessage(text: "This runner isn't bound to a repo/org whose labels can be edited.", kind: .error)
+            return nil
+        }
+        do {
+            return try await github.runnerLabels(for: target, runnerID: cfg.agentId)
+        } catch {
+            banner = BannerMessage(text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription, kind: .error)
+            return nil
+        }
+    }
+
+    /// Replace a runner's custom labels on GitHub. Returns the resulting full set, or nil on error.
+    func saveRunnerLabels(_ instance: RunnerInstance, custom: [String]) async -> [RunnerLabel]? {
+        guard let cfg = instance.config, let target = GHTarget(scope: cfg.scope) else { return nil }
+        do {
+            let updated = try await github.setCustomLabels(for: target, runnerID: cfg.agentId, labels: custom)
+            banner = BannerMessage(text: "Updated labels for \(instance.displayName).", kind: .success)
+            return updated
+        } catch {
+            banner = BannerMessage(text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription, kind: .error)
+            return nil
+        }
     }
 
     var selectedRunner: RunnerInstance? {
@@ -220,6 +273,184 @@ final class RunnerStore {
         runnerDirectoryPaths.removeAll { $0 == instance.id }
     }
 
+    // MARK: - Onboarding / discovery
+
+    /// Run the bounded, read-only search used by onboarding and Settings.
+    func discoverExistingRunners() async {
+        guard !isDiscoveringRunners else { return }
+        isDiscoveringRunners = true
+        defer { isDiscoveringRunners = false }
+        let explicit = runnerDirectoryPaths.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        discoveredRunners = await RunnerDiscovery.discoverDefault(explicitDirectories: explicit)
+    }
+
+    func isManagedRunner(_ instance: RunnerInstance) -> Bool {
+        runnerDirectoryPaths.contains(instance.id)
+    }
+
+    /// Add selected discovery results without dropping any folders already managed.
+    func addDiscoveredRunners(withIDs ids: Set<String>) {
+        var paths = runnerDirectoryPaths
+        var seen = Set(paths)
+        for runner in discoveredRunners where ids.contains(runner.id) {
+            if seen.insert(runner.id).inserted { paths.append(runner.id) }
+        }
+        if paths != runnerDirectoryPaths { runnerDirectoryPaths = paths }
+    }
+
+    /// Add a manually chosen folder to the pending discovery results without
+    /// persisting it before the user finishes onboarding.
+    @discardableResult
+    func addDiscoveryCandidate(_ url: URL) -> Bool {
+        let directory = url.standardizedFileURL
+        let instance = RunnerInstance(
+            directory: directory,
+            config: RunnerConfig.load(from: directory)
+        )
+        guard instance.looksLikeRunnerDirectory else {
+            banner = BannerMessage(
+                text: "\(directory.lastPathComponent) doesn't look like a runner directory (no run.sh/config.sh).",
+                kind: .error
+            )
+            return false
+        }
+        if !discoveredRunners.contains(where: { $0.id == instance.id }) {
+            discoveredRunners.append(instance)
+            discoveredRunners.sort {
+                $0.directory.path.localizedStandardCompare($1.directory.path) == .orderedAscending
+            }
+        }
+        return true
+    }
+
+    /// Complete setup only for a backend that is actually available. Selecting
+    /// dedicated mode cannot silently fall back to running jobs as the admin user.
+    @discardableResult
+    func completeOnboarding(selectedRunnerIDs: Set<String>) -> Bool {
+        switch executionMode {
+        case .currentAccount:
+            addDiscoveredRunners(withIDs: selectedRunnerIDs)
+        case .dedicatedAccount:
+            guard runnerAgentReady else {
+                banner = BannerMessage(
+                    text: runnerAgentError ?? "Runner Agent must be enabled and healthy before dedicated mode can be selected.",
+                    kind: .error
+                )
+                return false
+            }
+        }
+        onboardingCompleted = true
+        defaults.set(true, forKey: Keys.onboardingCompleted)
+        Task { await refreshAll() }
+        return true
+    }
+
+    func reviewOnboarding() {
+        onboardingCompleted = false
+        defaults.set(false, forKey: Keys.onboardingCompleted)
+    }
+
+    // MARK: - Read-only Runner Agent
+
+    var runnerAccountExists: Bool { RunnerAgentManager.runnerAccountExists }
+    var runnerAgentHasProductionSigningIdentity: Bool {
+        RunnerAgentManager.hasProductionSigningIdentity
+    }
+    var runnerAgentReady: Bool {
+        guard runnerAgentRegistrationState == .enabled,
+              let health = runnerAgentHealth else { return false }
+        return health.protocolVersion == RunnerAgentConstants.protocolVersion
+            && health.accountName == RunnerAgentConstants.accountName
+            && health.effectiveUserID != 0
+    }
+
+    func refreshRunnerAgent() async {
+        runnerAgentRegistrationState = RunnerAgentManager.status
+        runnerAgentHealth = nil
+        runnerAgentError = nil
+        guard runnerAgentRegistrationState == .enabled else { return }
+        do {
+            let health = try await runnerAgentClient.health()
+            guard health.protocolVersion == RunnerAgentConstants.protocolVersion else {
+                throw RunnerAgentClientError.incompatibleProtocol(
+                    expected: RunnerAgentConstants.protocolVersion,
+                    received: health.protocolVersion
+                )
+            }
+            guard health.accountName == RunnerAgentConstants.accountName else {
+                throw RunnerAgentClientError.wrongAccount(
+                    expected: RunnerAgentConstants.accountName,
+                    received: health.accountName
+                )
+            }
+            guard health.effectiveUserID != 0 else { throw RunnerAgentClientError.rootAgent }
+            runnerAgentHealth = health
+        } catch {
+            runnerAgentError = error.localizedDescription
+        }
+    }
+
+    func registerRunnerAgent() async {
+        guard !isWorkingWithRunnerAgent else { return }
+        isWorkingWithRunnerAgent = true
+        defer { isWorkingWithRunnerAgent = false }
+        do {
+            try RunnerAgentManager.register()
+            await refreshRunnerAgent()
+            banner = BannerMessage(
+                text: runnerAgentRegistrationState == .requiresApproval
+                    ? "Runner Agent registered. Approve it in System Settings › General › Login Items."
+                    : "Runner Agent registered.",
+                kind: .success
+            )
+        } catch {
+            runnerAgentRegistrationState = RunnerAgentManager.status
+            runnerAgentError = error.localizedDescription
+            banner = BannerMessage(text: error.localizedDescription, kind: .error)
+        }
+    }
+
+    func unregisterRunnerAgent() async {
+        guard !isWorkingWithRunnerAgent else { return }
+        isWorkingWithRunnerAgent = true
+        defer { isWorkingWithRunnerAgent = false }
+        do {
+            try RunnerAgentManager.unregister()
+            runnerAgentRegistrationState = RunnerAgentManager.status
+            runnerAgentHealth = nil
+            agentDiscoveredRunners = []
+            banner = BannerMessage(text: "Runner Agent unregistered.", kind: .success)
+        } catch {
+            runnerAgentError = error.localizedDescription
+            banner = BannerMessage(text: error.localizedDescription, kind: .error)
+        }
+    }
+
+    func openRunnerAgentSystemSettings() {
+        RunnerAgentManager.openSystemSettings()
+    }
+
+    func discoverDedicatedRunners() async {
+        guard runnerAgentReady, !isWorkingWithRunnerAgent else { return }
+        isWorkingWithRunnerAgent = true
+        defer { isWorkingWithRunnerAgent = false }
+        do {
+            let records = try await runnerAgentClient.discoverRunners()
+            let expectedUserID = runnerAgentHealth?.effectiveUserID
+            let expectedHome = runnerAgentHealth?.homeDirectory ?? ""
+            let homePrefix = expectedHome.hasSuffix("/") ? expectedHome : expectedHome + "/"
+            agentDiscoveredRunners = records.filter { record in
+                record.ownerUserID == expectedUserID
+                    && !expectedHome.isEmpty
+                    && record.directoryPath.hasPrefix(homePrefix)
+            }
+            lastAgentDiscovery = Date()
+            runnerAgentError = nil
+        } catch {
+            runnerAgentError = error.localizedDescription
+        }
+    }
+
     // MARK: - Polling
 
     func startPolling() {
@@ -239,6 +470,19 @@ final class RunnerStore {
     }
 
     func refreshAll() async {
+        if executionMode == .dedicatedAccount {
+            await refreshRunnerAgent()
+            if runnerAgentReady,
+               lastAgentDiscovery == nil
+                || Date().timeIntervalSince(lastAgentDiscovery!) > 30 {
+                await discoverDedicatedRunners()
+            }
+            statuses = [:]
+            insights = [:]
+            lastRefresh = Date()
+            return
+        }
+
         // Refresh gh auth at most every 30s.
         if lastAuthCheck == nil || Date().timeIntervalSince(lastAuthCheck!) > 30 {
             ghAuth = await github.authStatus()
@@ -363,11 +607,13 @@ final class RunnerStore {
 
     /// Configured runners that are not currently running.
     var startableRunners: [RunnerInstance] {
-        runners.filter { $0.isConfigured && !(statuses[$0.id]?.isRunning ?? false) }
+        guard executionMode == .currentAccount else { return [] }
+        return runners.filter { $0.isConfigured && !(statuses[$0.id]?.isRunning ?? false) }
     }
     /// Runners with a live process.
     var runningRunners: [RunnerInstance] {
-        runners.filter { statuses[$0.id]?.isRunning ?? false }
+        guard executionMode == .currentAccount else { return [] }
+        return runners.filter { statuses[$0.id]?.isRunning ?? false }
     }
 
     func startAll() {
@@ -388,6 +634,7 @@ final class RunnerStore {
 
     /// Check every configured runner and apply verified updates to idle ones.
     func updateAll() async {
+        guard allowLocalRunnerMutation() else { return }
         let key = "update-all"
         guard !inFlight.contains(key) else { return }
         inFlight.insert(key); defer { inFlight.remove(key) }
@@ -447,6 +694,7 @@ final class RunnerStore {
 
     /// Run `svc.sh status` and surface the output.
     func showServiceStatus(_ instance: RunnerInstance) async {
+        guard allowLocalRunnerMutation() else { return }
         do {
             let status = try await backend.serviceStatus(instance)
             banner = BannerMessage(text: status, kind: .info)
@@ -457,7 +705,8 @@ final class RunnerStore {
 
     /// The launchd log directory for a runner's service, if installed.
     func serviceLogDirectory(_ instance: RunnerInstance) -> URL? {
-        backend.serviceLogDirectory(for: instance)
+        guard executionMode == .currentAccount else { return nil }
+        return backend.serviceLogDirectory(for: instance)
     }
 
     /// Register an existing runner directory against a GitHub target. Returns success.
@@ -469,6 +718,7 @@ final class RunnerStore {
     func registerExisting(directory: URL, target: GHTarget, name: String, labels: [String],
                           options: RegisterOptions = RegisterOptions(),
                           reconfigure: Bool = false) async -> Bool {
+        guard allowLocalRunnerMutation() else { return false }
         let key = "register-\(directory.path)"
         guard !inFlight.contains(key) else { return false }
         inFlight.insert(key); defer { inFlight.remove(key) }
@@ -535,6 +785,7 @@ final class RunnerStore {
                            options: RegisterOptions = RegisterOptions(),
                            addToGitignore: Bool = false,
                            progress: @escaping @Sendable (Double) -> Void) async -> Bool {
+        guard allowLocalRunnerMutation() else { return false }
         let key = "create-\(folderName)"
         guard !inFlight.contains(key) else { return false }
         inFlight.insert(key); defer { inFlight.remove(key) }
@@ -650,6 +901,7 @@ final class RunnerStore {
     func applyUpdate(_ instance: RunnerInstance, info: UpdateInfo,
                      allowUnverified: Bool = false,
                      progress: @escaping @Sendable (Double) -> Void) async -> Bool {
+        guard allowLocalRunnerMutation() else { return false }
         // Refuse to update mid-job.
         if statuses[instance.id]?.busy == true {
             banner = BannerMessage(text: UpdateError.runnerBusy.errorDescription ?? "Runner busy", kind: .error)
@@ -709,6 +961,7 @@ final class RunnerStore {
     /// so a failed start/stop doesn't leave the UI stuck.
     private func perform(key: String, resetTransient id: String? = nil,
                          _ work: @escaping () async throws -> Void) {
+        guard allowLocalRunnerMutation() else { return }
         guard !inFlight.contains(key) else { return }
         inFlight.insert(key)
         Task { [self] in
@@ -725,6 +978,20 @@ final class RunnerStore {
             try? await Task.sleep(nanoseconds: 800_000_000)
             await refreshAll()
         }
+    }
+
+    /// Phase 2 dedicated mode is intentionally read-only. No code path may
+    /// silently fall back to executing a local controller operation as the admin.
+    @discardableResult
+    private func allowLocalRunnerMutation() -> Bool {
+        guard executionMode == .currentAccount else {
+            banner = BannerMessage(
+                text: "Dedicated-account mode is read-only until Runner Agent lifecycle control is implemented.",
+                kind: .error
+            )
+            return false
+        }
+        return true
     }
 
     /// Convert `ps` etime ("15:28", "01:02:03", "1-02:03:04") to "15m", "1h 2m", "1d 2h".

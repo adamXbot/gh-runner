@@ -14,6 +14,7 @@ enum GHTarget: Equatable, Sendable {
     var registrationTokenPath: String { "\(apiBase)/actions/runners/registration-token" }
     var removeTokenPath: String { "\(apiBase)/actions/runners/remove-token" }
     var runnersPath: String { "\(apiBase)/actions/runners" }
+    func runnerLabelsPath(id: Int) -> String { "\(apiBase)/actions/runners/\(id)/labels" }
 
     var webURLString: String {
         switch self {
@@ -262,6 +263,43 @@ struct GitHubClient: Sendable {
             }
         }
         return runners
+    }
+
+    // MARK: - Runner labels (requires admin)
+
+    /// All labels for a runner, both default (read-only) and custom.
+    func runnerLabels(for target: GHTarget, runnerID: Int) async throws -> [RunnerLabel] {
+        let result = try await gh([
+            "api", "-H", "Accept: application/vnd.github+json",
+            target.runnerLabelsPath(id: runnerID)
+        ])
+        try mapCommonErrors(result, context: target.displayString)
+        guard let data = result.stdout.data(using: .utf8),
+              let response = try? JSONDecoder().decode(RunnerLabelsResponse.self, from: data) else {
+            throw GitHubError.decodeFailed("runner labels")
+        }
+        return response.labels
+    }
+
+    /// Replace the runner's CUSTOM labels (default labels are preserved by GitHub).
+    /// Returns the resulting full label set.
+    func setCustomLabels(for target: GHTarget, runnerID: Int, labels: [String]) async throws -> [RunnerLabel] {
+        let body = try JSONEncoder().encode(["labels": labels])
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("runnermenu-labels-\(UUID().uuidString).json")
+        try body.write(to: tmp)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let result = try await gh([
+            "api", "-X", "PUT", "-H", "Accept: application/vnd.github+json",
+            target.runnerLabelsPath(id: runnerID), "--input", tmp.path
+        ])
+        try mapCommonErrors(result, context: target.displayString)
+        guard let data = result.stdout.data(using: .utf8),
+              let response = try? JSONDecoder().decode(RunnerLabelsResponse.self, from: data) else {
+            throw GitHubError.decodeFailed("runner labels")
+        }
+        return response.labels
     }
 
     // MARK: - Releases

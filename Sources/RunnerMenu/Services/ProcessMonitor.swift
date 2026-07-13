@@ -15,6 +15,13 @@ struct ProcessScan: Sendable {
     /// Runner directory paths that currently have a `Runner.Worker` (a job is executing).
     var busyDirectories: Set<String> = []
 
+    /// Every runner directory visible in the current process snapshot.
+    var runnerDirectories: [URL] {
+        Set(listeners.keys).union(busyDirectories)
+            .sorted()
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
     func listener(for directory: URL) -> ProcInfo? {
         listeners[ProcessMonitor.normalize(directory.path)]
     }

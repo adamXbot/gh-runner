@@ -20,12 +20,28 @@ struct MenuContentView: View {
         case register
         case updates
         case log
+        case labels
     }
     @State private var route: Route = .home
     @State private var homeContentHeight: CGFloat = 320
 
+    @ViewBuilder
     var body: some View {
-        @Bindable var store = store
+        if store.onboardingCompleted {
+            if store.executionMode == .dedicatedAccount {
+                DedicatedRunnerAgentMenuView(
+                    openWindow: openMainWindow,
+                    openSettings: openSettingsWindow
+                )
+            } else {
+                configuredContent
+            }
+        } else {
+            onboardingPrompt
+        }
+    }
+
+    private var configuredContent: some View {
         VStack(spacing: 0) {
             header
             Divider()
@@ -46,6 +62,35 @@ struct MenuContentView: View {
         .frame(width: 388)
         .animation(.easeInOut(duration: 0.15), value: store.banner)
         .task { await store.refreshAll() }
+    }
+
+    private var onboardingPrompt: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "gearshape.2.fill")
+                .font(.system(size: 34))
+                .foregroundStyle(.tint)
+            Text("Finish setting up Runner Menu")
+                .font(.headline)
+            Text("Choose which macOS account should run jobs and discover any existing GitHub Actions runners.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                openMainWindow()
+            } label: {
+                Label("Open Setup", systemImage: "arrow.up.forward.app")
+            }
+            .buttonStyle(.borderedProminent)
+            Divider()
+            Button(role: .destructive) {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Label("Quit Runner Menu", systemImage: "power")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(24)
+        .frame(width: 388)
     }
 
     // MARK: - Header
@@ -88,6 +133,7 @@ struct MenuContentView: View {
         case .register: return "Add / Register Runner"
         case .updates: return "Runner Updates"
         case .log: return "Live Log"
+        case .labels: return "Edit Labels"
         }
     }
 
@@ -107,6 +153,10 @@ struct MenuContentView: View {
         case .log:
             if let runner = store.selectedRunner {
                 LogConsoleView(instance: runner)
+            } else { missingRunner }
+        case .labels:
+            if let runner = store.selectedRunner {
+                LabelEditorView(instance: runner, fixedHeight: 420)
             } else { missingRunner }
         }
     }
@@ -139,7 +189,8 @@ struct MenuContentView: View {
                         RunnerDetailView(
                             instance: selected,
                             showLog: { withAnimation { route = .log } },
-                            showUpdates: { withAnimation { route = .updates } }
+                            showUpdates: { withAnimation { route = .updates } },
+                            showLabels: { withAnimation { route = .labels } }
                         )
                     }
                 }

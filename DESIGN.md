@@ -44,6 +44,7 @@ that act on the selection; Finder integration (Reveal in Finder); multi-represen
 | Element | Native control/API | Selection | Keyboard | Copy/paste | Drag/drop | Context menu | State saved | Accessibility |
 |---|---|---|---|---|---|---|---|---|
 | Menu-bar glyph | `MenuBarExtra` label (SF Symbol) | — | Click/return opens panel | — | — | — | — | Labelled: "runner online / busy / none" |
+| Onboarding | Account-choice cards + discovery `List` | Multi-select discovered runners | Full keyboard; Continue/Back | — | — | — | Completion, execution mode, imported folders | Native buttons, checkboxes, labels |
 | Runner list | `ScrollView` + selectable cards | Single-select (tap) | Arrow/tab focus; Return = start/stop selected | Copy name / repo URL (context) | — (future: drag folder out) | Start/Stop, Open on GitHub, Copy URL/Name, Reveal in Finder, Unregister, Remove | Selected runner id | Cards expose `.isSelected`, combined label |
 | Runner detail | `VStack` of `StatRow`s | reflects list selection | Return primary; buttons focusable | All stat values `.textSelection` | — | (inherits row) | — | Each stat is a combined label |
 | Recent jobs | list rows w/ result glyph | — | — | selectable text | — | — | — | icon + name + relative time |
@@ -99,6 +100,10 @@ Every important action is reachable from a labelled control or a menu — never 
 - **Finder** — Reveal in Finder for runner folders and log files.
 - **Pasteboard** — copy runner name / repo URL; all values selectable.
 - **`SMAppService`** — the app itself as a login item.
+- **App-bundled `SMAppService` LaunchDaemon** — the read-only Runner Agent runs as the standard
+  `runner` account and serves an authenticated privileged Mach service.
+- **`NSXPCConnection`** — versioned health and discovery messages; both peers apply code-signing
+  requirements before the connection is activated.
 - **GitHub web** — Open on GitHub / release notes via `NSWorkspace`.
 
 The cross-user redesign introduces a signed, standard-account Runner Agent behind a semantic
@@ -110,9 +115,10 @@ execution backend. See [Cross-user runner architecture](docs/CROSS_USER_ARCHITEC
 
 Persisted in `UserDefaults` (and `SMAppService`):
 - Runner directories (the managed set) · refresh interval · start method (run.sh vs launchd) ·
-  `gh` path · selected runner · login-item state.
+  `gh` path · selected runner · login-item state · onboarding completion · execution-account mode.
 
 Transient (not persisted): download progress, in-flight action set, banners, current panel route.
+Runner Agent registration status, health, and discovered records are also refreshed rather than persisted.
 
 Reset behavior: removing a folder only forgets it in the app; it never deletes the runner directory.
 

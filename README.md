@@ -34,6 +34,8 @@ machine (for example, `~/actions-runner`).
   (and `admin:org` if you register org-level runners).
 - An existing runner install (the GitHub-provided `actions-runner` folder). The app can also
   download and create a brand-new runner folder for you.
+- Dedicated-account mode additionally requires a standard macOS account with the short name
+  `runner`, plus a Developer ID-signed and notarized Runner Menu app installed in `/Applications`.
 
 ## Build & run
 
@@ -41,6 +43,12 @@ machine (for example, `~/actions-runner`).
 ./build-app.sh            # release build -> build/RunnerMenu.app (ad-hoc signed)
 open build/RunnerMenu.app
 ```
+
+The assembled app includes the read-only Runner Agent and its LaunchDaemon property list. Ad-hoc
+signing is suitable for compiling and inspecting the bundle, but macOS requires apps containing
+LaunchDaemons to be Developer ID-signed and notarized before approval. Set
+`RUNNERMENU_SIGN_IDENTITY="Developer ID Application: …"` when producing that build, then notarize
+and staple it before installing it in `/Applications`.
 
 Or during development:
 
@@ -59,8 +67,10 @@ The app has **no Dock icon** — look for its glyph in the menu bar (top-right).
 
 ## Using it
 
-1. **First run** — if `~/actions-runner` exists it's picked up automatically. Otherwise click **Add**
-   to point at an existing runner folder, or register a new one.
+1. **First run** — choose whether jobs should run as the signed-in account or the dedicated
+   `runner` account. Current-account mode has full lifecycle control. Dedicated mode can register
+   and verify the signed Runner Agent, then discover runner-owned installations in read-only mode;
+   lifecycle controls remain fail-closed until the next phase.
 2. **Register** (Add → *Existing folder* / *New runner*) — pick a repo from your admin list (or type
    `owner/repo`, an org, or a URL under *Advanced*), name the runner, add labels, and hit
    **Register**. *New runner* downloads + hash-verifies the latest runner package into a new folder
@@ -81,19 +91,23 @@ Sources/RunnerMenu/
   Models/
     RunnerConfig.swift       parse .runner (BOM-tolerant); scope repo/org/enterprise
     RunnerInstance.swift     one runner directory
+    RunnerExecutionMode.swift current-account / dedicated-account setup choice
     RunnerStatus.swift       live status (state/pid/cpu/mem/uptime/busy/job)
     GitHubModels.swift       repo / token / release / runner DTOs
   Services/
     Shell.swift              async Process wrapper (concurrent pipe drain, PATH augmentation)
     GitHubClient.swift       gh-CLI wrapper: auth, admin repos, tokens, runners, releases
     ProcessMonitor.swift     ps scan -> PID/CPU/mem/uptime, dir<->PID via executable path
+    RunnerDiscovery.swift    bounded, read-only existing-runner discovery
     LogTailer.swift          newest _diag log, job start/complete parsing, tail
     RunnerController.swift    start/stop/register/unregister, launchd service, signals
     Updater.swift            check/download/SHA-256 verify/extract; release-body hash parse
     LoginItem.swift          SMAppService.mainApp wrapper
     RunnerStore.swift        @MainActor @Observable hub: polling, actions, settings
-  Views/                     MenuContentView, RunnerRowView, RunnerDetailView,
+  Views/                     OnboardingView, MenuContentView, RunnerRowView, RunnerDetailView,
                              RegisterRunnerView, UpdatesView, LogConsoleView, SettingsView, …
+Sources/RunnerAgent/         LaunchDaemon executable; authenticated read-only health + discovery
+Sources/RunnerAgentProtocol/ versioned XPC wire models, protocol, peer signing requirements
 build-app.sh                 assemble + ad-hoc sign the .app bundle
 Resources/Info.plist         LSUIElement, bundle id, versions
 ```
@@ -107,6 +121,8 @@ Everything GitHub-related routes through `gh`, so the app never handles your cre
   applied; an unverifiable package is refused unless you knowingly override.
 - **Destructive actions are gated.** Unregister and update are explicit, confirm where it matters, and
   never delete your runner directory.
+- **Dedicated mode is fail-closed.** Its Phase 2 XPC interface has no arbitrary command, file, or
+  lifecycle operation; local admin-account mutations are rejected while dedicated mode is selected.
 
 For a machine that executes this repository's Actions jobs, follow the dedicated-account,
 repository-only registration, fork-PR, signing-isolation, and update checklist in
@@ -141,5 +157,7 @@ against a throwaway repo):
       forced hash mismatch is rejected with the download discarded.
 - [ ] Context menu on a row acts on that runner (Open on GitHub, Copy URL/Name, Reveal, Unregister, Remove).
 - [ ] Settings persist across relaunch (interval, start method, gh path, folders, login item).
+- [ ] On a Developer ID-signed/notarized build, register and approve the Runner Agent; confirm health
+      reports account `runner`, a nonzero UID, the expected protocol version, and only runner-owned folders.
 - [ ] Works in dark mode and with increased contrast; VoiceOver reads runner rows and stats.
 - [ ] A repo you lack admin on surfaces a clear "needs admin" message rather than a raw error.

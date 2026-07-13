@@ -28,6 +28,9 @@ struct MenuBarLabel: View {
     }
 
     private var symbolName: String {
+        if store.executionMode == .dedicatedAccount {
+            return store.runnerAgentReady ? "lock.shield.fill" : "exclamationmark.shield"
+        }
         let a = aggregate
         if a.busy { return "bolt.horizontal.circle.fill" }
         if a.running { return "play.circle.fill" }
@@ -36,6 +39,11 @@ struct MenuBarLabel: View {
     }
 
     private var accessibilityText: String {
+        if store.executionMode == .dedicatedAccount {
+            return store.runnerAgentReady
+                ? "Runner Menu — dedicated Runner Agent connected in read-only mode"
+                : "Runner Menu — dedicated Runner Agent needs attention"
+        }
         let a = aggregate
         if a.busy { return "Runner Menu — a job is running" }
         if a.running { return "Runner Menu — runner online" }
