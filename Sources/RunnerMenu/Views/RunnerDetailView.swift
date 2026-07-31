@@ -200,9 +200,14 @@ struct RunnerDetailView: View {
                         }
                         Spacer(minLength: 4)
                         if let ts = job.timestamp {
-                            Text(ts, format: .relative(presentation: .numeric))
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                            // A formatted Date is otherwise just a snapshot. Drive the
+                            // relative value from a timeline so it stays accurate while
+                            // the menu is open, even when no runner state changes.
+                            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                Text(ts, format: .relative(presentation: .numeric))
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                         }
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
