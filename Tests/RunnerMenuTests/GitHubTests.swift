@@ -11,6 +11,7 @@ struct GitHubTests {
         case .notAuthenticated: return "auth"
         case .shell: return "shell"
         case .decodeFailed: return "decode"
+        case .workflowCancellationDenied: return "cancel-permission"
         case nil: return "nil"
         }
     }
@@ -53,5 +54,17 @@ struct GitHubTests {
 
         let garbage = GHRelease(tagName: "v1", name: nil, body: nil, htmlUrl: "https://x", publishedAt: "not-a-date", assets: [])
         #expect(garbage.publishedDate == nil)
+    }
+
+    @Test func workflowCancellationUsesExplicitRepository() {
+        let reference = WorkflowRunReference(
+            repository: "octo-org/octo-repo",
+            runID: "29227574780"
+        )
+        #expect(GitHubClient.cancelWorkflowRunArguments(reference) == [
+            "run", "cancel", "29227574780", "--repo", "octo-org/octo-repo"
+        ])
+        #expect(GitHubError.workflowCancellationDenied(reference.repository)
+            .errorDescription?.contains("Actions write permission") == true)
     }
 }

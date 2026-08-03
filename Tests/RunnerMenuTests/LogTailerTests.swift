@@ -121,6 +121,27 @@ struct LogTailerTests {
         #expect(LogTailer.runID(inWorkerText: "\"run_id\"\n\"v\": \"not-a-number\"") == nil)
     }
 
+    @Test func workflowRunReferenceParsesRepositoryAndRunID() throws {
+        let text = """
+                {
+                  "k": "repository",
+                  "v": "octo-org/octo-repo"
+                },
+                {
+                  "k": "run_id",
+                  "v": "29227574780"
+                }
+        """
+        let reference = try #require(LogTailer.workflowRunReference(inWorkerText: text))
+        #expect(reference.repository == "octo-org/octo-repo")
+        #expect(reference.runID == "29227574780")
+        #expect(reference.gitHubURL?.absoluteString
+                == "https://github.com/octo-org/octo-repo/actions/runs/29227574780")
+        #expect(LogTailer.workflowRunReference(inWorkerText: text.replacingOccurrences(
+            of: "octo-org/octo-repo", with: "not-a-repository"
+        )) == nil)
+    }
+
     @Test func workerFileTimestampParsesFilename() throws {
         let url = URL(fileURLWithPath: "/x/_diag/Worker_20260713-061804-utc.log")
         let date = try #require(LogTailer.workerFileTimestamp(url))

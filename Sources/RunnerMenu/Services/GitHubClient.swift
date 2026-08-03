@@ -88,6 +88,7 @@ enum GitHubError: LocalizedError {
     case notFound(String)
     case rateLimited
     case decodeFailed(String)
+    case workflowCancellationDenied(String)
     case shell(ShellError)
 
     var errorDescription: String? {
@@ -102,6 +103,8 @@ enum GitHubError: LocalizedError {
             return "GitHub API rate limit reached. Wait a little and try again."
         case .decodeFailed(let what):
             return "Could not read the GitHub response for \(what)."
+        case .workflowCancellationDenied(let repository):
+            return "GitHub denied cancellation for \(repository). The active account needs Actions write permission (or `repo` scope)."
         case .shell(let e):
             return e.errorDescription
         }
@@ -300,6 +303,35 @@ struct GitHubClient: Sendable {
             throw GitHubError.decodeFailed("runner labels")
         }
         return response.labels
+    }
+
+    // MARK: - Workflow runs
+
+    /// Request cancellation of an in-progress GitHub Actions workflow run.
+    func cancelWorkflowRun(_ reference: WorkflowRunReference) async throws {
+        let args = Self.cancelWorkflowRunArguments(reference)
+        let result = try await gh(args)
+        guard result.succeeded else {
+            if let classified = GitHubError.classify(
+                stderr: result.stderr,
+                context: "workflow run \(reference.runID) in \(reference.repository)"
+            ) {
+                if case .forbidden = classified {
+                    throw GitHubError.workflowCancellationDenied(reference.repository)
+                }
+                throw classified
+            }
+            throw GitHubError.shell(.nonZeroExit(
+                command: "gh run cancel",
+                code: result.exitCode,
+                stderr: result.stderr
+            ))
+        }
+    }
+
+    /// Kept separate so the exact repository-scoped CLI invocation is testable.
+    static func cancelWorkflowRunArguments(_ reference: WorkflowRunReference) -> [String] {
+        ["run", "cancel", reference.runID, "--repo", reference.repository]
     }
 
     // MARK: - Releases

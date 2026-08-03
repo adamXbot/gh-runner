@@ -179,16 +179,55 @@ final class RunnerStore {
     /// A GitHub URL for the job: the specific Actions run if the `run_id` can be recovered
     /// from the job's Worker log, otherwise the repository's Actions page.
     func jobGitHubURL(_ job: JobRecord, in runner: RunnerInstance) async -> URL? {
-        guard let base = runner.gitHubURL else { return nil }
-        let dir = runner.directory
-        let runID = await Task.detached(priority: .utility) { () -> String? in
-            guard let workerLog = LogTailer.workerLog(for: job, in: dir) else { return nil }
-            return LogTailer.runID(fromWorkerLog: workerLog)
-        }.value
-        if let runID {
-            return base.appendingPathComponent("actions/runs/\(runID)")
+        if let reference = await workflowRunReference(for: job, in: runner) {
+            return reference.gitHubURL
         }
-        return base.appendingPathComponent("actions")
+        return runner.gitHubURL?.appendingPathComponent("actions")
+    }
+
+    /// Cancel the workflow run that owns a currently executing local job.
+    func cancelJob(_ job: JobRecord, in runner: RunnerInstance) {
+        let key = "cancel-job-\(runner.id)"
+        guard !inFlight.contains(key) else { return }
+        inFlight.insert(key)
+        Task { [self] in
+            defer { inFlight.remove(key) }
+            do {
+                guard let reference = await workflowRunReference(for: job, in: runner) else {
+                    banner = BannerMessage(
+                        text: "Could not identify the GitHub workflow run for \(job.name) yet. Wait a moment and try again.",
+                        kind: .error
+                    )
+                    return
+                }
+                try await github.cancelWorkflowRun(reference)
+                banner = BannerMessage(text: "Cancellation requested for \(job.name).", kind: .success)
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                await refreshAll()
+            } catch {
+                banner = BannerMessage(
+                    text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription,
+                    kind: .error
+                )
+            }
+        }
+    }
+
+    /// Resolve the Worker-log metadata for a job. Repository-scoped runners can
+    /// fall back to their configured repository if an older log omitted it.
+    private func workflowRunReference(for job: JobRecord,
+                                      in runner: RunnerInstance) async -> WorkflowRunReference? {
+        let dir = runner.directory
+        let fallbackRepository = runner.config?.repoSlug
+        return await Task.detached(priority: .utility) {
+            guard let workerLog = LogTailer.workerLog(for: job, in: dir) else { return nil }
+            if let reference = LogTailer.workflowRunReference(fromWorkerLog: workerLog) {
+                return reference
+            }
+            guard let fallbackRepository,
+                  let runID = LogTailer.runID(fromWorkerLog: workerLog) else { return nil }
+            return WorkflowRunReference(repository: fallbackRepository, runID: runID)
+        }.value
     }
 
     // MARK: - Runner labels

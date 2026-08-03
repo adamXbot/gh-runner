@@ -1,6 +1,16 @@
 import Foundation
 import SwiftUI
 
+/// The GitHub identity needed to open or cancel a workflow run.
+struct WorkflowRunReference: Equatable, Sendable {
+    let repository: String
+    let runID: String
+
+    var gitHubURL: URL? {
+        URL(string: "https://github.com/\(repository)/actions/runs/\(runID)")
+    }
+}
+
 /// A parsed job outcome from the runner's diagnostic log.
 struct JobRecord: Identifiable, Equatable, Sendable {
     let id: String
@@ -284,6 +294,23 @@ enum LogTailer {
         return f.date(from: stamp)
     }
 
+    /// Extract the repository and GitHub Actions `run_id` from a Worker log's
+    /// job message. Both are needed to address the workflow run via GitHub.
+    static func workflowRunReference(fromWorkerLog url: URL) -> WorkflowRunReference? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let text = String(decoding: handle.readData(ofLength: 300_000), as: UTF8.self)
+        return workflowRunReference(inWorkerText: text)
+    }
+
+    /// Testable core of `workflowRunReference(fromWorkerLog:)`.
+    static func workflowRunReference(inWorkerText text: String) -> WorkflowRunReference? {
+        guard let repository = jobMessageValue(for: "repository", in: text),
+              case .repo = GHTarget.parseManual(repository),
+              let runID = runID(inWorkerText: text) else { return nil }
+        return WorkflowRunReference(repository: repository, runID: runID)
+    }
+
     /// Extract the GitHub Actions `run_id` from a Worker log's job message
     /// (a `"k": "run_id"` / `"v": "<digits>"` pair near the top of the file).
     static func runID(fromWorkerLog url: URL) -> String? {
@@ -295,14 +322,20 @@ enum LogTailer {
 
     /// Testable core of `runID(fromWorkerLog:)`.
     static func runID(inWorkerText text: String) -> String? {
-        guard let k = text.range(of: "\"run_id\"") else { return nil }
+        guard let value = jobMessageValue(for: "run_id", in: text) else { return nil }
+        return (!value.isEmpty && value.allSatisfy(\.isNumber)) ? value : nil
+    }
+
+    /// Pull a `"k": "<key>"` / `"v": "<value>"` pair from the runner's
+    /// serialized job-message properties.
+    private static func jobMessageValue(for key: String, in text: String) -> String? {
+        guard let k = text.range(of: "\"\(key)\"") else { return nil }
         let after = text[k.upperBound...]
         guard let v = after.range(of: "\"v\"") else { return nil }
         let rest = after[v.upperBound...]
         guard let open = rest.firstIndex(of: "\"") else { return nil }
         let valueStart = rest.index(after: open)
         guard let close = rest[valueStart...].firstIndex(of: "\"") else { return nil }
-        let value = String(rest[valueStart..<close])
-        return (!value.isEmpty && value.allSatisfy(\.isNumber)) ? value : nil
+        return String(rest[valueStart..<close])
     }
 }

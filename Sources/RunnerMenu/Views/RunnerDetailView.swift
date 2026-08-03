@@ -12,6 +12,7 @@ struct RunnerDetailView: View {
     /// suppressed when this view is embedded there.
     var showsPrimaryControl: Bool = true
     var showsActionButtons: Bool = true
+    @State private var confirmCancelJob = false
 
     private var status: RunnerLiveStatus { store.status(for: instance) }
     private var insight: RunnerLogInsights? { store.insight(for: instance) }
@@ -36,6 +37,20 @@ struct RunnerDetailView: View {
             if showsActionButtons {
                 actionButtons
             }
+        }
+        .confirmationDialog(
+            "Cancel the current job?",
+            isPresented: $confirmCancelJob,
+            titleVisibility: .visible
+        ) {
+            Button("Cancel Job", role: .destructive) {
+                if let record = runningJobRecord {
+                    store.cancelJob(record, in: instance)
+                }
+            }
+            Button("Keep Running", role: .cancel) {}
+        } message: {
+            Text("GitHub will cancel the workflow run and ask this runner to stop the active job.")
         }
     }
 
@@ -77,25 +92,48 @@ struct RunnerDetailView: View {
 
     private func currentJobBanner(_ job: String) -> some View {
         let record = runningJobRecord
-        return Button {
-            if let record { openJob(record) }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "bolt.fill").foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Running job").font(.caption2).foregroundStyle(.secondary)
-                    Text(job).font(.caption.weight(.medium)).lineLimit(2)
+        let canceling = store.isInFlight("cancel-job-\(instance.id)")
+        return HStack(spacing: 8) {
+            Button {
+                if let record { openJob(record) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "bolt.fill").foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Running job").font(.caption2).foregroundStyle(.secondary)
+                        Text(job).font(.caption.weight(.medium)).lineLimit(2)
+                    }
+                    Spacer()
+                    if record != nil {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.orange.opacity(0.7))
+                    }
                 }
-                Spacer()
-                if record != nil {
-                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.orange.opacity(0.7))
-                }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(record == nil)
+            .help(record != nil ? "Open running job — \(store.jobClickAction.label)" : "")
+
+            if record != nil {
+                Button(role: .destructive) {
+                    confirmCancelJob = true
+                } label: {
+                    if canceling {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Cancel", systemImage: "xmark.circle.fill")
+                    }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+                .disabled(canceling)
+                .help("Cancel this GitHub Actions job")
+                .accessibilityLabel(canceling ? "Cancelling job" : "Cancel job")
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(record == nil)
-        .help(record != nil ? "Open running job — \(store.jobClickAction.label)" : "")
         .contextMenu { if let record { jobContextMenu(record) } }
         .padding(8)
         .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
@@ -230,6 +268,11 @@ struct RunnerDetailView: View {
     private func jobContextMenu(_ job: JobRecord) -> some View {
         Button("Open on GitHub") { openJobOnGitHub(job) }
         Button("Reveal Local Log") { revealJobLog(job) }
+        if job.result == .running {
+            Divider()
+            Button("Cancel Job…", role: .destructive) { confirmCancelJob = true }
+                .disabled(store.isInFlight("cancel-job-\(instance.id)"))
+        }
     }
 
     private func jobAccessibilityLabel(_ job: JobRecord) -> String {
