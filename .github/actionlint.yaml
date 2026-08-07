@@ -1,0 +1,13 @@
+# actionlint cannot know a self-hosted runner's custom labels, so it reports
+# them as unknown. Declaring them here keeps real findings visible instead of
+# buried under noise.
+#
+# These are the fleet's labels — see docs/RUNNER_FLEET.md for what each one
+# means and, in the case of release-signing, what it obliges the host to do.
+self-hosted-runner:
+  labels:
+    - macOS
+    - ARM64
+    - X64
+    - repo-ci
+    - release-signing

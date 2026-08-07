@@ -128,6 +128,23 @@ For a machine that executes this repository's Actions jobs, follow the dedicated
 repository-only registration, fork-PR, signing-isolation, and update checklist in
 [Hardening the repository runner](docs/RUNNER_HARDENING.md).
 
+For running more than one runner across more than one repository, see
+[The runner fleet](docs/RUNNER_FLEET.md) — what each label means, which repositories are allowed on
+self-hosted hardware at all (private ones, and the reasoning is short), and how that rule is
+enforced at registration, before runner allocation, before checkout, and on a schedule.
+[The Linux runner](docs/LINUX_RUNNER.md) covers the ephemeral Ubuntu side, where each job gets a
+runner that has never run anything.
+
+Helper scripts:
+
+| Script | What it does |
+|---|---|
+| `scripts/setup-macos-ci-account.sh` | Creates the standard (non-admin) macOS account jobs run as, proves it came out isolated, and prints exactly what to do next. Dry run unless `--apply` |
+| `scripts/mint-fleet-tokens.sh` | Run from the admin account: checks every repo is private, mints one-time registration tokens, stages the scripts where the CI account can read them, and prints a paste-ready block |
+| `scripts/register-fleet-runner.sh` | Registers one runner against one repository, refusing public repositories first. With `--token` it needs no GitHub CLI, so the CI account never holds a credential |
+| `scripts/provision-linux-runner.sh` | Provisions an Ubuntu VM as an ephemeral runner (one job per runner, fresh registration each time) |
+| `scripts/audit-runner-host.sh` | Read-only host audit. `--all-runners` covers every installation; `--check-visibility` asks github.com whether a bound repository has become public |
+
 Please report suspected vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Do
 not include credentials, registration tokens, or unredacted runner logs in a public issue.
 

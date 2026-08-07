@@ -1,0 +1,22 @@
+# Fleet inventory — which repositories get a self-hosted runner on this host.
+#
+# Copy to ~/.config/gh-runner/fleet (or point $GH_RUNNER_FLEET_FILE at it) and
+# edit. One OWNER/REPO per line; blank lines and # comments are ignored.
+#
+# It is not committed, and that is deliberate: this repository is public, and a
+# list of which private repositories run on which machine is precisely the kind
+# of inventory not to publish. The scripts read it from your config directory
+# instead.
+#
+# Every repository listed here must be PRIVATE. mint-fleet-tokens.sh checks
+# each one and refuses to mint a token for a public repository — a public
+# repository accepts pull requests from anyone, its Actions minutes are free,
+# and a self-hosted runner is a persistent machine that is not reset between
+# jobs. See docs/RUNNER_FLEET.md.
+#
+# A runner serves exactly one repository, so each line below becomes one runner
+# installation.
+
+# owner/some-private-app
+# owner/some-other-private-app
+# another-owner/private-service

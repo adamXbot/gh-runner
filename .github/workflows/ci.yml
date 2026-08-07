@@ -1,11 +1,22 @@
 name: CI
 
+# GitHub-hosted, deliberately.
+#
+# This repository is public, and a public repository must never run on the
+# self-hosted fleet — that is the rule this project exists to enforce, and it
+# applies to the project itself first. A public repository accepts pull
+# requests from anyone, a pull request is a proposal to run its author's code,
+# and a self-hosted runner is a persistent machine that is not reset between
+# jobs. See docs/RUNNER_FLEET.md.
+#
+# Being hosted is also why this workflow can use an ordinary `pull_request`
+# trigger with no fork gate: a fork's code running on a throwaway GitHub VM is
+# exactly what that VM is for.
+
 on:
   push:
     branches: [main]
-  # Deliberately use the base branch's workflow definition so a fork cannot
-  # remove the fork gate in its proposed workflow changes.
-  pull_request_target:
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -17,13 +28,8 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and test (self-hosted)
-    # Evaluate this before allocating the persistent runner. Fork pull requests
-    # must never execute code on it, even if the repository later accepts forks.
-    if: >-
-      github.event_name != 'pull_request_target' ||
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, macOS, ARM64, repo-ci]
+    name: Build and test
+    runs-on: macos-15
     timeout-minutes: 20
 
     steps:
@@ -31,17 +37,17 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          # pull_request_target defaults to the base branch. The fork gate above
-          # must pass before we explicitly fetch and execute the same-repo PR.
-          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.ref }}
-
-      - name: Verify ordinary runner isolation
-        run: >-
-          ./scripts/audit-runner-host.sh
-          --expected-repository "$GITHUB_REPOSITORY"
 
       - name: Run unit tests
         run: ./run-tests.sh
 
       - name: Build release configuration
         run: swift build -c release
+
+      - name: Shellcheck the runner scripts
+        # These scripts provision and audit real hosts; a typo in one is a
+        # worse outcome than a typo in the app.
+        run: |
+          set -euo pipefail
+          brew install shellcheck >/dev/null
+          shellcheck -s bash scripts/*.sh

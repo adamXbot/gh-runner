@@ -16,3 +16,9 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# Fleet inventory is host-specific and names private repositories; it lives in
+# ~/.config/gh-runner/fleet instead. See fleet.example.
+fleet
+fleet.local
+docs/FLEET.local.md

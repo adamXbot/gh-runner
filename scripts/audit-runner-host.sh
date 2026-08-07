@@ -10,6 +10,9 @@ warnings=0
 runner_dir="${RUNNER_INSTALL_DIR:-}"
 expected_repository=""
 check_updates=false
+check_visibility=false
+declared_visibility=""
+all_runners=false
 
 usage() {
     /bin/cat <<'EOF'
@@ -18,9 +21,26 @@ Usage: audit-runner-host.sh [options]
 Options:
   --runner-dir PATH              Actions runner installation directory. If omitted,
                                  discover it above GITHUB_WORKSPACE or use ~/actions-runner.
+  --all-runners                  Audit every runner installation under $HOME instead of
+                                 one. The fleet runs several (a runner serves a single
+                                 repository), and they have to be checked together.
   --expected-repository SLUG     Expected owner/repository or GitHub repository URL.
+  --visibility VALUE             Repository visibility as the workflow observed it.
+                                 Fails unless "private". From CI, pass
+                                 ${{ github.event.repository.private && 'private' || 'public' }}.
+  --check-visibility             Ask github.com whether each bound repository is publicly
+                                 visible, using an unauthenticated request (needs network,
+                                 no credential — see the note below).
   --check-updates                Ask macOS Software Update whether updates are pending.
   -h, --help                     Show this help.
+
+Why an unauthenticated request can answer "is this repository public":
+GitHub answers 404 rather than 403 for a repository the caller cannot see, so
+it never confirms a private repository's existence. That inverts neatly into
+the check this host needs — 200 means the repository is readable by the entire
+internet, which is exactly the state a self-hosted runner must not be bound to.
+It also means the audit stays credential-free, which matters: this same script
+FAILs the host when it finds a usable GitHub CLI login.
 EOF
 }
 
@@ -53,10 +73,23 @@ while [ "$#" -gt 0 ]; do
             runner_dir="$2"
             shift 2
             ;;
+        --all-runners)
+            all_runners=true
+            shift
+            ;;
         --expected-repository)
             require_value "$@"
             expected_repository="$2"
             shift 2
+            ;;
+        --visibility)
+            require_value "$@"
+            declared_visibility="$2"
+            shift 2
+            ;;
+        --check-visibility)
+            check_visibility=true
+            shift
             ;;
         --check-updates)
             check_updates=true
@@ -188,9 +221,17 @@ discover_runner_dir() {
     return 1
 }
 
-if [ -z "$runner_dir" ]; then
-    runner_dir="$(discover_runner_dir || true)"
-fi
+discover_all_runner_dirs() {
+    # A runner serves exactly one repository, so a host that covers several
+    # repositories has several installations side by side.
+    /usr/bin/find "$HOME" -maxdepth 2 -name '.runner' -type f -print 2>/dev/null \
+        | while IFS= read -r marker; do
+            candidate="$(/usr/bin/dirname "$marker")"
+            if [ -x "$candidate/bin/Runner.Listener" ]; then
+                printf '%s\n' "$candidate"
+            fi
+        done
+}
 
 normalize_repository() {
     local value="$1"
@@ -201,37 +242,129 @@ normalize_repository() {
     printf '%s\n' "$value" | /usr/bin/tr '[:upper:]' '[:lower:]'
 }
 
-if [ -z "$runner_dir" ]; then
-    fail "Could not locate the Actions runner installation. Pass --runner-dir."
-elif [ ! -f "$runner_dir/.runner" ] || [ ! -x "$runner_dir/bin/Runner.Listener" ]; then
-    fail "'$runner_dir' is not a configured Actions runner installation."
-else
-    pass "Found the Actions runner installation at $runner_dir."
+repository_is_public() {
+    # Echoes public / not-public / unknown. See --help for why an
+    # unauthenticated request is the right tool here.
+    local slug="$1" status
+    status="$(/usr/bin/curl -s -o /dev/null -w '%{http_code}' \
+        --max-time 15 \
+        -H 'Accept: application/vnd.github+json' \
+        "https://api.github.com/repos/${slug}" 2>/dev/null || true)"
+    case "$status" in
+        200) printf 'public\n' ;;
+        404) printf 'not-public\n' ;;
+        *)   printf 'unknown:%s\n' "${status:-no-response}" ;;
+    esac
+}
 
-    configured_url="$(/usr/bin/plutil -extract gitHubUrl raw -o - "$runner_dir/.runner" 2>/dev/null || true)"
+matched_expected_repository=false
+
+audit_runner_install() {
+    local dir="$1"
+
+    if [ ! -f "$dir/.runner" ] || [ ! -x "$dir/bin/Runner.Listener" ]; then
+        fail "'$dir' is not a configured Actions runner installation."
+        return
+    fi
+
+    pass "Found the Actions runner installation at $dir."
+
+    local configured_url configured_repository disable_update runner_version
+    configured_url="$(/usr/bin/plutil -extract gitHubUrl raw -o - "$dir/.runner" 2>/dev/null || true)"
     configured_repository="$(normalize_repository "$configured_url")"
     if [[ "$configured_url" != https://github.com/* ]] \
         || [[ ! "$configured_repository" =~ ^[^/]+/[^/]+$ ]]; then
         fail "Runner is not registered at repository scope (configured URL: ${configured_url:-unknown})."
     elif [ -n "$expected_repository" ] \
-        && [ "$(normalize_repository "$expected_repository")" != "$configured_repository" ]; then
+        && [ "$(normalize_repository "$expected_repository")" = "$configured_repository" ]; then
+        matched_expected_repository=true
+        pass "Runner is registered only to repository '$configured_repository' (the expected one)."
+    elif [ -n "$expected_repository" ] && ! $all_runners; then
         fail "Runner targets '$configured_repository', not '$(normalize_repository "$expected_repository")'."
     else
+        # In --all-runners mode the other installations are siblings serving
+        # other repositories, which is the normal shape of the fleet — a
+        # runner serves exactly one repository. Whether the expected one was
+        # found at all is reported once, after the loop.
         pass "Runner is registered only to repository '$configured_repository'."
     fi
 
-    disable_update="$(/usr/bin/plutil -extract disableupdate raw -o - "$runner_dir/.runner" 2>/dev/null || true)"
-    if [ "$disable_update" = "true" ]; then
-        fail "Actions runner automatic updates are disabled."
-    else
-        pass "Actions runner automatic updates are enabled."
+    # The machine-side half of the fleet's central rule: self-hosted runners
+    # are bound to private repositories only. A public repository accepts pull
+    # requests from anyone, and this host is not reset between jobs.
+    if $check_visibility && [[ "$configured_repository" =~ ^[^/]+/[^/]+$ ]]; then
+        local visibility
+        visibility="$(repository_is_public "$configured_repository")"
+        case "$visibility" in
+            public)
+                fail "Repository '$configured_repository' is PUBLIC. A self-hosted runner must never be bound to a repository that accepts pull requests from strangers."
+                ;;
+            not-public)
+                pass "Repository '$configured_repository' is not publicly readable."
+                ;;
+            *)
+                warn "Could not determine whether '$configured_repository' is public (${visibility#unknown:})."
+                ;;
+        esac
     fi
 
-    runner_version="$($runner_dir/bin/Runner.Listener --version 2>/dev/null || true)"
+    disable_update="$(/usr/bin/plutil -extract disableupdate raw -o - "$dir/.runner" 2>/dev/null || true)"
+    if [ "$disable_update" = "true" ]; then
+        fail "Actions runner automatic updates are disabled for $dir."
+    else
+        pass "Actions runner automatic updates are enabled for $dir."
+    fi
+
+    runner_version="$("$dir/bin/Runner.Listener" --version 2>/dev/null || true)"
     if [ -n "$runner_version" ]; then
         pass "Actions runner version: $runner_version."
     else
-        warn "Could not read the installed Actions runner version."
+        warn "Could not read the installed Actions runner version in $dir."
+    fi
+}
+
+# Visibility as the calling workflow saw it. Cheap, needs no network, and
+# catches the case the API probe cannot: a repository flipped to public
+# between the audit's last run and this job.
+if [ -n "$declared_visibility" ]; then
+    if [ "$declared_visibility" = "private" ]; then
+        pass "Calling workflow reports the repository is private."
+    else
+        fail "Calling workflow reports repository visibility '$declared_visibility'. Self-hosted runners are for private repositories only."
+    fi
+fi
+
+if $all_runners; then
+    runner_dirs=()
+    while IFS= read -r found_dir; do
+        [ -n "$found_dir" ] && runner_dirs+=("$found_dir")
+    done < <(discover_all_runner_dirs)
+
+    if [ "${#runner_dirs[@]}" -eq 0 ]; then
+        fail "No Actions runner installations were found under $HOME."
+    else
+        pass "Found ${#runner_dirs[@]} Actions runner installation(s) under $HOME."
+        for found_dir in "${runner_dirs[@]}"; do
+            audit_runner_install "$found_dir"
+        done
+
+        if [ -n "$expected_repository" ]; then
+            if $matched_expected_repository; then
+                pass "A runner for '$(normalize_repository "$expected_repository")' is installed on this host."
+            else
+                fail "No runner on this host is registered to '$(normalize_repository "$expected_repository")'."
+            fi
+        fi
+    fi
+else
+    if [ -z "$runner_dir" ]; then
+        runner_dir="$(discover_runner_dir || true)"
+    fi
+
+    if [ -z "$runner_dir" ]; then
+        fail "Could not locate the Actions runner installation. Pass --runner-dir."
+    else
+        audit_runner_install "$runner_dir"
     fi
 fi
 
