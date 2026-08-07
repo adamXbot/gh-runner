@@ -29,7 +29,12 @@ concurrency:
 jobs:
   build-and-test:
     name: Build and test
-    runs-on: macos-15
+    # macos-26, not macos-15. The package is swift-tools-version 6.0 and is
+    # developed against Swift 6.3 / macOS 26; on the older image's toolchain
+    # the test suite fails to compile on main-actor isolation rules that
+    # Swift 6.3 resolves differently. Running CI on a toolchain the project
+    # does not target tests the wrong thing.
+    runs-on: macos-26
     timeout-minutes: 20
 
     steps:
