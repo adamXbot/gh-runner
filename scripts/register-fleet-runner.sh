@@ -259,9 +259,16 @@ if [ -n "$supplied_token" ]; then
     token="$supplied_token"
     ok "Using the supplied registration token."
 else
+    # Shape-checked, not emptiness-checked: on an error `gh api --jq` returns
+    # the whole error body on stdout, so a 404 reads as a long non-empty
+    # "token" and sails past `[ -z ... ]`.
     token="$(gh api --method POST "repos/${repository}/actions/runners/registration-token" --jq '.token' 2>/dev/null)"
-    if [ -z "$token" ]; then
-        bad "Could not mint a registration token for '$repository'. Do you have admin rights on it?"
+    if ! printf '%s' "$token" | /usr/bin/grep -Eq '^[A-Za-z0-9_-]{20,}$'; then
+        bad "Could not mint a registration token for '$repository'."
+        if [ "$(gh api "repos/${repository}" --jq '.permissions.admin' 2>/dev/null)" = "false" ]; then
+            info "You do not administer this repository. Minting needs admin —"
+            info "have someone who administers ${repository%%/*} mint one and pass it with --token."
+        fi
         exit 1
     fi
     ok "Minted a one-time registration token."

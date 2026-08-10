@@ -184,9 +184,20 @@ for repo in "${repositories[@]}"; do
             ;;
     esac
 
+    # Validate the shape, do not merely check for emptiness. On an error `gh
+    # api --jq` hands back the whole error body on stdout — a 404 arrives as
+    # 162 characters of JSON, which is non-empty, so an emptiness check calls
+    # it a success and emits `--token {"message":"Not Found"...}` into the
+    # block below. Registration tokens are a run of uppercase alphanumerics.
     token="$(gh api --method POST "repos/${repo}/actions/runners/registration-token" --jq '.token' 2>/dev/null)"
-    if [ -z "$token" ]; then
-        bad "$repo — could not mint a token. Do you have admin rights on it?"
+    if ! printf '%s' "$token" | /usr/bin/grep -Eq '^[A-Za-z0-9_-]{20,}$'; then
+        if [ "$(gh api "repos/${repo}" --jq '.permissions.admin' 2>/dev/null)" = "false" ]; then
+            bad "$repo — you do not administer this repository, so you cannot mint a registration token."
+            info "         Minting needs admin. Run this script from an account that"
+            info "         administers ${repo%%/*}, or ask its owner to send you the token."
+        else
+            bad "$repo — could not mint a token (unexpected response)."
+        fi
         failures=$((failures + 1))
         continue
     fi
