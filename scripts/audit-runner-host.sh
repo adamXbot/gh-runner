@@ -308,6 +308,30 @@ audit_runner_install() {
         esac
     fi
 
+    # config.sh snapshots the PATH of whatever shell registered the runner into
+    # .path, and every job then runs with it. Register with `su ci-runner`
+    # instead of `su - ci-runner` and you capture the ADMINISTRATOR's PATH —
+    # including entries under their home, which this account cannot read.
+    # Jobs then fail with EACCES on tool lookups, and worse, a readable entry
+    # would silently hand CI the admin's binaries.
+    if [ -f "$dir/.path" ]; then
+        local foreign
+        foreign="$(/usr/bin/tr ':' '\n' < "$dir/.path" 2>/dev/null \
+            | /usr/bin/grep -E "^/Users/" \
+            | /usr/bin/grep -v "^$HOME/" \
+            | /usr/bin/grep -v "^/Users/Shared/" || true)"
+        if [ -n "$foreign" ]; then
+            fail "Runner PATH in $dir/.path points into another user's home:"
+            while IFS= read -r entry; do
+                [ -n "$entry" ] && printf '        %s\n' "$entry"
+            done <<< "$foreign"
+            printf '      Re-register from a clean login shell (su - ci-runner), or strip them:\n'
+            printf '        tr ":" "\\n" < .path | grep -v "^/Users/OTHER" | paste -sd: - > .path.new && mv .path.new .path\n'
+        else
+            pass "Runner PATH contains no other user's home directory."
+        fi
+    fi
+
     disable_update="$(/usr/bin/plutil -extract disableupdate raw -o - "$dir/.runner" 2>/dev/null || true)"
     if [ "$disable_update" = "true" ]; then
         fail "Actions runner automatic updates are disabled for $dir."
