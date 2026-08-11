@@ -53,7 +53,9 @@ struct RunnerDetailView: View {
     private var primaryControl: some View {
         let starting = store.isInFlight("start-\(instance.id)")
         let stopping = store.isInFlight("stop-\(instance.id)")
-        if status.state == .notConfigured {
+        if !instance.isOwnedByCurrentUser {
+            foreignAccountNotice
+        } else if status.state == .notConfigured {
             Text("This directory has no runner registration yet. Use “Add / Register Runner” to bind it to a repository.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -81,6 +83,31 @@ struct RunnerDetailView: View {
             .disabled(starting)
             .keyboardShortcut(.return, modifiers: [])
         }
+    }
+
+    /// Shown instead of Start/Stop for a runner owned by another macOS account.
+    /// Everything above this point — status, stats, current job, history — is
+    /// read from the filesystem and the process table and stays accurate; only
+    /// control is unavailable, and saying so beats a button that always fails.
+    private var foreignAccountNotice: some View {
+        let account = instance.ownerAccountName ?? "another account"
+        return VStack(alignment: .leading, spacing: 6) {
+            Label("Runs as “\(account)”", systemImage: "person.crop.circle.badge.exclamationmark")
+                .font(.callout.weight(.medium))
+            Text("""
+            Monitoring works; control does not. This runner's service is a \
+            LaunchAgent in \(account)'s login session, and launchd only accepts \
+            load and unload requests from inside that session.
+            """)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("To start or stop it, switch to \(account) and run ./svc.sh there.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
     }
 
     private func currentJobBanner(_ job: String) -> some View {
@@ -204,7 +231,11 @@ struct RunnerDetailView: View {
             Spacer()
             if serviceBusy { ProgressView().controlSize(.small) }
             Menu {
-                if status.serviceInstalled {
+                if !instance.isOwnedByCurrentUser {
+                    // Every entry in this menu drives svc.sh, which reaches the
+                    // owner's launchd domain and nothing else.
+                    Text("Owned by “\(instance.ownerAccountName ?? "another account")” — service control is only available from that account's session.")
+                } else if status.serviceInstalled {
                     if status.isRunning {
                         Button { store.stopService(instance) } label: { Label("Stop Service", systemImage: "stop.fill") }
                     } else {

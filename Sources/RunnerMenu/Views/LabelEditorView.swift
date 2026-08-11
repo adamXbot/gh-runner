@@ -20,15 +20,15 @@ struct LabelEditorView: View {
                 Text("Add or remove **custom** labels for **\(instance.displayName)**. Default labels (self-hosted, macOS, arch) are fixed by GitHub. Changes apply without restarting the runner.")
                     .font(.caption).foregroundStyle(.secondary)
 
+                Label(accountRequirementNote, systemImage: "person.badge.key")
+                    .font(.caption2).foregroundStyle(.secondary)
+
                 if isLoading && !loaded {
                     HStack { ProgressView().controlSize(.small); Text("Loading labels…").font(.caption) }
                 } else if loaded {
                     editor
                 } else {
-                    HStack {
-                        Text("Couldn't load labels.").font(.caption).foregroundStyle(.secondary)
-                        Button("Retry") { Task { await load() } }.controlSize(.small)
-                    }
+                    loadFailure
                 }
             }
             .padding(14)
@@ -91,6 +91,39 @@ struct LabelEditorView: View {
     }
 
     // MARK: - Logic
+
+    private var scope: String { instance.scopeLabel ?? "this repo/org" }
+
+    /// Always-visible note: which gh account is used and that admin is required.
+    private var accountRequirementNote: String {
+        if let account = store.ghAuth.account {
+            return "Uses your GitHub CLI login (\(account)) and needs admin access to \(scope)."
+        }
+        return "Uses your GitHub CLI login and needs admin access to \(scope). Run `gh auth login` first."
+    }
+
+    /// Shown when the label list can't be loaded — usually the wrong gh account.
+    private var loadFailure: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Couldn't load labels", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.orange)
+            Text(loadFailureExplanation)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Retry") { Task { await load() } }.controlSize(.small)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var loadFailureExplanation: String {
+        let account = store.ghAuth.account ?? "the signed-in account"
+        return "Editing labels needs admin access to \(scope), and the GitHub CLI account in use (\(account)) may not administer it. "
+            + "Switch to an account with admin on \(scope) — `gh auth switch` (or `gh auth login`) — then Retry. "
+            + "Rate limits and network errors can also cause this."
+    }
 
     private var trimmedNew: String { newLabel.trimmingCharacters(in: .whitespaces) }
 

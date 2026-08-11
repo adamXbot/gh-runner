@@ -80,6 +80,8 @@ struct OnboardingView: View {
                     detail: "Prepare a signed Runner Agent under the standard account named runner. This phase observes and discovers only; it does not launch jobs yet."
                 )
 
+                dedicatedSecurityInfo
+
                 if store.executionMode == .dedicatedAccount { runnerAgentSetupPanel }
             }
             .padding(28)
@@ -136,6 +138,65 @@ struct OnboardingView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    /// Explains why a dedicated account is a security-hardening measure. Grounded in
+    /// docs/RUNNER_HARDENING.md and docs/CROSS_USER_ARCHITECTURE.md.
+    private var dedicatedSecurityInfo: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("Why a dedicated account? It's a security-hardening measure", systemImage: "checkmark.shield.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.tint)
+
+            Text("A self-hosted runner executes workflow, pull-request, and dependency code directly on your Mac, and the host is not reset between jobs — so the macOS account it runs under is the real security boundary.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 7) {
+                securityBullet("lock.fill", "Isolates your data and credentials",
+                    "Jobs run under a different UID, so macOS file and Keychain isolation keeps them away from your files, gh token, SSH keys, signing certificates, and iCloud/browser data.")
+                securityBullet("shield.lefthalf.filled", "Least privilege",
+                    "The runner account is a standard (non-admin) user, never root — job code can't change system settings or install software machine-wide.")
+                securityBullet("key", "Nothing valuable to steal",
+                    "Kept free of personal accounts, password managers, and distribution signing identities, a compromised job has nothing sensitive to exfiltrate.")
+                securityBullet("eye", "This phase stays read-only",
+                    "For now the app only discovers runner-owned installs over a signed, verified XPC connection. It launches no jobs and runs no arbitrary commands as that account yet.")
+            }
+
+            Text("Choosing “This account” is fine for a private repo you fully trust; prefer a dedicated account (or an ephemeral VM) for public repos or fork pull requests.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Label("Testing GitHub Advanced Security — e.g. dependency-submission workflows — resolves dependencies by running your package manager and build scripts, so keep those on the standard runner account, never a full-admin one.", systemImage: "shippingbox")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Link("Learn more — GitHub self-hosted runner security",
+                 destination: URL(string: "https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners")!)
+                .font(.caption)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.tint.opacity(0.25)))
+    }
+
+    private func securityBullet(_ icon: String, _ title: String, _ body: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.caption.weight(.medium))
+                Text(body).font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(body)")
     }
 
     private var runnerAgentSetupPanel: some View {

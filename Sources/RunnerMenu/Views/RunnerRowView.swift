@@ -28,6 +28,20 @@ struct RunnerRowView: View {
                     if let v = instance.installedVersion {
                         Text("· v\(v)").foregroundStyle(.tertiary)
                     }
+                    if !instance.isOwnedByCurrentUser, let account = instance.ownerAccountName {
+                        // The account a runner executes as is the security
+                        // boundary, so name it rather than leaving the row
+                        // looking like every other one.
+                        Label(account, systemImage: "person.crop.circle")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(
+                                Capsule().fill(Color.secondary.opacity(0.15))
+                            )
+                            .help("Runs as the macOS account “\(account)”. This app cannot start or stop it — see the detail pane.")
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -86,6 +100,11 @@ struct RunnerRowView: View {
     private var primaryButton: some View {
         let starting = store.isInFlight("start-\(instance.id)")
         let stopping = store.isInFlight("stop-\(instance.id)")
+        // A runner owned by another account is observable but not operable:
+        // svc.sh loads a LaunchAgent into the owner's GUI launchd domain, which
+        // this process cannot address. Offering a button that always fails with
+        // "Load failed: 5: Input/output error" is worse than offering none.
+        let foreign = !instance.isOwnedByCurrentUser
         if status.isRunning {
             Button {
                 store.stop(instance)
@@ -94,8 +113,8 @@ struct RunnerRowView: View {
                 else { Image(systemName: "stop.fill") }
             }
             .buttonStyle(.borderless)
-            .help("Stop runner")
-            .disabled(stopping)
+            .help(foreign ? foreignControlExplanation : "Stop runner")
+            .disabled(stopping || foreign)
             .accessibilityLabel("Stop \(instance.displayName)")
         } else {
             Button {
@@ -105,15 +124,26 @@ struct RunnerRowView: View {
                 else { Image(systemName: "play.fill") }
             }
             .buttonStyle(.borderless)
-            .help("Start runner")
-            .disabled(starting)
+            .help(foreign ? foreignControlExplanation : "Start runner")
+            .disabled(starting || foreign)
             .accessibilityLabel("Start \(instance.displayName)")
         }
     }
 
+    private var foreignControlExplanation: String {
+        let account = instance.ownerAccountName ?? "another account"
+        return """
+        Runs as “\(account)”, so this app cannot start or stop it. \
+        Its service belongs to that account's login session — sign in as \
+        \(account) and use svc.sh there.
+        """
+    }
+
     @ViewBuilder
     private var contextMenu: some View {
-        if status.isRunning {
+        if !instance.isOwnedByCurrentUser {
+            Text(foreignControlExplanation)
+        } else if status.isRunning {
             Button("Stop Runner") { store.stop(instance) }
             Button("Force Stop") { store.stop(instance, force: true) }
         } else if status.state != .notConfigured {
