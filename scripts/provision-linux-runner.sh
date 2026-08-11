@@ -27,7 +27,8 @@ set -euo pipefail
 
 RUNNER_USER="ci-runner"
 RUNNER_HOME="/opt/actions-runner"
-REPOSITORY=""
+REPOSITORIES=()
+ORG=""
 LABELS="repo-ci"
 RUNNER_VERSION=""
 TOKEN_FILE="/etc/actions-runner/registration-token"
@@ -36,10 +37,27 @@ with_azure_cli=false
 
 usage() {
     cat <<'EOF'
-Usage: provision-linux-runner.sh --repository OWNER/REPO [options]
+Usage: provision-linux-runner.sh --repository OWNER/REPO [--repository ...] [options]
+       provision-linux-runner.sh --org OWNER [options]
 
-Required:
-  --repository OWNER/REPO  Repository this runner serves. Must be private.
+Targets (at least one):
+  --repository OWNER/REPO  A repository this VM serves. Repeatable — one runner
+                           is installed per repository, since a runner serves
+                           exactly one. Each must be private.
+  --org OWNER              An organisation-level runner, which covers every
+                           repository in the org with ONE runner instead of one
+                           per repository. Needs org admin to register.
+
+                           READ THIS BEFORE USING --org: an organisation runner
+                           is offered to every repository in the org, PUBLIC
+                           ONES INCLUDED, unless you put it in a runner group
+                           restricted to selected private repositories. Fork
+                           pull requests on a public repository would otherwise
+                           be able to reach this VM — the exact thing this fleet
+                           exists to prevent. Create the restricted group first,
+                           in Settings > Actions > Runner groups; this script
+                           cannot verify it for you, and the workflow-side
+                           assert-trusted-runner gate is your only backstop.
 
 Options:
   --user NAME           Account jobs run as (default: ci-runner).
@@ -69,7 +87,8 @@ die()  { printf '\033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --repository)     REPOSITORY="${2:?--repository needs a value}"; shift 2 ;;
+        --repository)     REPOSITORIES+=("${2:?--repository needs a value}"); shift 2 ;;
+        --org)            ORG="${2:?--org needs a value}"; shift 2 ;;
         --user)           RUNNER_USER="${2:?--user needs a value}"; shift 2 ;;
         --home)           RUNNER_HOME="${2:?--home needs a value}"; shift 2 ;;
         --labels)         LABELS="${2:?--labels needs a value}"; shift 2 ;;
@@ -82,25 +101,55 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ -n "$REPOSITORY" ] || { usage >&2; die "--repository is required."; }
-[[ "$REPOSITORY" =~ ^[^/]+/[^/]+$ ]] || die "--repository must be OWNER/REPO, got '$REPOSITORY'."
+if [ "${#REPOSITORIES[@]}" -eq 0 ] && [ -z "$ORG" ]; then
+    usage >&2
+    die "Give at least one --repository, or --org."
+fi
 [ "$(id -u)" -eq 0 ] || die "Run as root."
 command -v apt-get >/dev/null 2>&1 || die "This script targets Debian/Ubuntu."
 
-log "Checking that $REPOSITORY is private"
+# slugify owner/repo -> repo, owner -> owner; used for directory and systemd
+# instance names, so it must be filesystem- and unit-name-safe.
+slugify() {
+    printf '%s' "${1##*/}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/-*$//'
+}
 
-# Unauthenticated on purpose: GitHub answers 404 rather than 403 for a
-# repository the caller cannot see, so a 200 means it is readable by the whole
-# internet. Same check the macOS registration script makes, same reason —
-# self-hosted runners serve private repositories only. See docs/RUNNER_FLEET.md.
-status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
-    -H 'Accept: application/vnd.github+json' \
-    "https://api.github.com/repos/${REPOSITORY}" || true)"
-case "$status" in
-    404) info "Not publicly readable. Good." ;;
-    200) die "'$REPOSITORY' is PUBLIC. Public repositories get free Actions minutes and accept pull requests from anyone — leave it on a GitHub-hosted runner." ;;
-    *)   die "Could not determine visibility of '$REPOSITORY' (HTTP ${status:-no response}). Refusing to guess." ;;
-esac
+if [ "${#REPOSITORIES[@]}" -gt 0 ]; then
+    log "Checking every repository is private"
+
+    # Unauthenticated on purpose: GitHub answers 404 rather than 403 for a
+    # repository the caller cannot see, so a 200 means it is readable by the
+    # whole internet. Same check the macOS registration script makes, same
+    # reason — self-hosted runners serve private repositories only. See
+    # docs/RUNNER_FLEET.md.
+    for repo in "${REPOSITORIES[@]}"; do
+        [[ "$repo" =~ ^[^/]+/[^/]+$ ]] || die "--repository must be OWNER/REPO, got '$repo'."
+        status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${repo}" || true)"
+        case "$status" in
+            404) info "$repo — not publicly readable. Good." ;;
+            200) die "'$repo' is PUBLIC. Public repositories get free Actions minutes and accept pull requests from anyone — leave it on a GitHub-hosted runner." ;;
+            *)   die "Could not determine visibility of '$repo' (HTTP ${status:-no response}). Refusing to guess." ;;
+        esac
+    done
+fi
+
+if [ -n "$ORG" ]; then
+    log "Organisation-level runner: $ORG"
+    public_count="$(curl -fsSL --max-time 20 \
+        -H 'Accept: application/vnd.github+json' \
+        "https://api.github.com/orgs/${ORG}" 2>/dev/null | jq -r '.public_repos // 0')"
+    info "This runner will be offered to every repository in '${ORG}' unless you"
+    info "restrict it to a runner group with selected private repositories."
+    if [ "${public_count:-0}" -gt 0 ]; then
+        info ""
+        info "  ${ORG} has ${public_count} PUBLIC repositories. Without a restricted"
+        info "  runner group, a fork pull request on any of them could execute on"
+        info "  this VM. Create the group in Settings > Actions > Runner groups"
+        info "  BEFORE starting the service."
+    fi
+fi
 
 log "Base system"
 
@@ -227,8 +276,12 @@ esac
 
 mkdir -p "$RUNNER_HOME"
 tarball="actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz"
+# Downloaded and verified once, then copied per target. Each target needs its
+# own directory — a runner keeps its registration and work tree in place.
+staging="${RUNNER_HOME}/.package"
 
-if [ ! -x "$RUNNER_HOME/config.sh" ]; then
+if [ ! -x "$staging/config.sh" ]; then
+    mkdir -p "$staging"
     info "Downloading runner ${RUNNER_VERSION} (${RUNNER_ARCH})"
     # To disk first, then verify, then extract. Never pipe an archive
     # straight into tar.
@@ -258,13 +311,47 @@ if [ ! -x "$RUNNER_HOME/config.sh" ]; then
         info "WARNING: no SHA-256 found in the release notes; download unverified."
     fi
 
-    tar -xzf "/tmp/${tarball}" -C "$RUNNER_HOME"
+    tar -xzf "/tmp/${tarball}" -C "$staging"
     rm -f "/tmp/${tarball}"
 fi
 
-"$RUNNER_HOME/bin/installdependencies.sh" >/dev/null 2>&1 || true
-chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_HOME"
-info "Runner ${RUNNER_VERSION} installed at $RUNNER_HOME"
+"$staging/bin/installdependencies.sh" >/dev/null 2>&1 || true
+
+mkdir -p /etc/actions-runner/targets
+
+# Build the target list: each entry is "slug|scope|target".
+TARGETS=()
+for repo in "${REPOSITORIES[@]:-}"; do
+    [ -n "$repo" ] || continue
+    TARGETS+=("$(slugify "$repo")|repo|$repo")
+done
+[ -n "$ORG" ] && TARGETS+=("$(slugify "$ORG")-org|org|$ORG")
+
+for entry in "${TARGETS[@]}"; do
+    slug="${entry%%|*}"
+    rest="${entry#*|}"
+    scope="${rest%%|*}"
+    target="${rest#*|}"
+    dir="${RUNNER_HOME}/${slug}"
+
+    if [ ! -x "$dir/config.sh" ]; then
+        mkdir -p "$dir"
+        cp -a "$staging/." "$dir/"
+    fi
+    chown -R "$RUNNER_USER:$RUNNER_USER" "$dir"
+
+    cat > "/etc/actions-runner/targets/${slug}" <<EOF
+SCOPE=${scope}
+TARGET=${target}
+LABELS=${LABELS}
+EOF
+    chmod 644 "/etc/actions-runner/targets/${slug}"
+
+    info "${target} -> ${dir} (systemd instance: actions-runner@${slug})"
+done
+
+chown -R "$RUNNER_USER:$RUNNER_USER" "$staging"
+info "Runner ${RUNNER_VERSION} installed for ${#TARGETS[@]} target(s)"
 
 log "Ephemeral registration loop"
 
@@ -280,33 +367,53 @@ chown root:root "$TOKEN_FILE"
 # to retire the runner after one job; the loop then registers a new one with a
 # fresh just-in-time token. The PAT is read by this script as root and passed
 # to config.sh, never left where the runner account (and so a job) could read it.
+#
+# One runner serves one target, so a VM covering several repositories runs
+# several of these side by side. They are systemd template instances —
+# actions-runner@<slug> — each with its own runner directory, reading its
+# target from /etc/actions-runner/targets/<slug>.
 cat > /usr/local/bin/actions-runner-ephemeral <<EOF
 #!/bin/bash
 # Registers a fresh ephemeral runner, runs one job, exits. systemd restarts it.
+# Takes one argument: the target slug (see /etc/actions-runner/targets/).
 # Generated by provision-linux-runner.sh — edit that instead.
 set -euo pipefail
 
-REPOSITORY="${REPOSITORY}"
-RUNNER_HOME="${RUNNER_HOME}"
+RUNNER_ROOT="${RUNNER_HOME}"
 RUNNER_USER="${RUNNER_USER}"
-LABELS="${LABELS}"
 TOKEN_FILE="${TOKEN_FILE}"
 EOF
 
 cat >> /usr/local/bin/actions-runner-ephemeral <<'EOF'
 
+slug="${1:?usage: actions-runner-ephemeral <target-slug>}"
+target_file="/etc/actions-runner/targets/${slug}"
+[ -r "$target_file" ] || { echo "No target definition at $target_file" >&2; exit 1; }
+
+# SCOPE=repo|org, TARGET=owner/repo or owner, LABELS=...
+# shellcheck source=/dev/null
+. "$target_file"
+
+RUNNER_HOME="${RUNNER_ROOT}/${slug}"
+[ -x "${RUNNER_HOME}/config.sh" ] || { echo "No runner installed at ${RUNNER_HOME}" >&2; exit 1; }
+
 [ -s "$TOKEN_FILE" ] || { echo "No registration PAT in $TOKEN_FILE" >&2; exit 1; }
 PAT="$(cat "$TOKEN_FILE")"
+
+case "$SCOPE" in
+    org)  token_url="https://api.github.com/orgs/${TARGET}/actions/runners/registration-token" ;;
+    repo) token_url="https://api.github.com/repos/${TARGET}/actions/runners/registration-token" ;;
+    *)    echo "Unknown SCOPE '$SCOPE' in $target_file" >&2; exit 1 ;;
+esac
 
 reg_token="$(curl -fsSL -X POST \
     -H "Authorization: Bearer ${PAT}" \
     -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${REPOSITORY}/actions/runners/registration-token" \
-    | jq -r '.token')"
+    "$token_url" | jq -r '.token')"
 unset PAT
 
 [ -n "$reg_token" ] && [ "$reg_token" != "null" ] \
-    || { echo "Could not mint a registration token for ${REPOSITORY}" >&2; exit 1; }
+    || { echo "Could not mint a registration token for ${TARGET}" >&2; exit 1; }
 
 # A stale .runner from a killed job would make config.sh refuse.
 rm -f "${RUNNER_HOME}/.runner" "${RUNNER_HOME}/.credentials" \
@@ -317,9 +424,9 @@ rm -f "${RUNNER_HOME}/.runner" "${RUNNER_HOME}/.credentials" \
 rm -rf "${RUNNER_HOME}/_work" 2>/dev/null || true
 
 sudo -u "$RUNNER_USER" -- "${RUNNER_HOME}/config.sh" \
-    --url "https://github.com/${REPOSITORY}" \
+    --url "https://github.com/${TARGET}" \
     --token "$reg_token" \
-    --name "linux-ci-$(hostname -s)-$$" \
+    --name "linux-ci-$(hostname -s)-${slug}-$$" \
     --labels "$LABELS" \
     --ephemeral \
     --unattended \
@@ -331,15 +438,15 @@ EOF
 chmod 700 /usr/local/bin/actions-runner-ephemeral
 info "Wrote /usr/local/bin/actions-runner-ephemeral"
 
-cat > /etc/systemd/system/actions-runner.service <<EOF
+cat > /etc/systemd/system/actions-runner@.service <<EOF
 [Unit]
-Description=Ephemeral GitHub Actions runner for ${REPOSITORY}
+Description=Ephemeral GitHub Actions runner (%i)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/actions-runner-ephemeral
+ExecStart=/usr/local/bin/actions-runner-ephemeral %i
 # The runner exits after each job by design; restarting IS the loop.
 Restart=always
 RestartSec=5
@@ -354,12 +461,18 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-info "Wrote actions-runner.service (not started)"
+info "Wrote actions-runner@.service (template, not started)"
 
 log "Done"
 
+instances=""
+for entry in "${TARGETS[@]}"; do
+    instances="${instances} actions-runner@${entry%%|*}"
+done
+instances="${instances# }"
+
 cat <<EOF
-    Repository : ${REPOSITORY}
+    Targets    : ${#TARGETS[@]}
     Labels     : self-hosted, Linux, ${RUNNER_ARCH^^}, ${LABELS}
     Account    : ${RUNNER_USER} (no login shell)
     Mode       : ephemeral — one job per runner, fresh registration each time
@@ -367,22 +480,39 @@ cat <<EOF
     Still to do:
 
       1. Put a fine-grained PAT in ${TOKEN_FILE}
-         Scope: this repository only, Administration: read & write, nothing else.
+
+         Scope it to exactly the targets above and nothing else:
+           - repository runners : Administration: read & write, those repos only
+           - organisation runner: organization Self-hosted runners:
+                                  read & write
 
              install -m 600 /dev/null ${TOKEN_FILE}
              # paste the PAT, save
 
-      2. Start it:
+      2. Start them:
 
-             systemctl enable --now actions-runner
-             systemctl status actions-runner
-             journalctl -u actions-runner -f
+             systemctl enable --now ${instances}
 
-      3. Confirm it appears under the repository's
-         Settings > Actions > Runners, then push a commit and watch it take
-         a job and disappear afterwards. Disappearing is correct.
+         Watch one:
+
+             journalctl -u actions-runner@<slug> -f
+
+      3. Confirm each appears under its repository's (or the org's)
+         Settings > Actions > Runners, then push a commit and watch a runner
+         take the job and disappear afterwards. Disappearing is correct — that
+         is --ephemeral working.
 
     Do not install anything else on this VM. The runner account is in the
     docker group, which on Linux is root-equivalent; a dedicated VM is what
     keeps that contained.
 EOF
+
+if [ -n "$ORG" ]; then
+cat <<EOF
+
+    BEFORE STARTING THE ORG RUNNER: restrict it to a runner group containing
+    only the private repositories it should serve. An unrestricted org runner
+    is offered to every repository in ${ORG}, public ones included, and a fork
+    pull request on a public repository would then reach this VM.
+EOF
+fi
