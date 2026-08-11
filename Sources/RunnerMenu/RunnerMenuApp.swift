@@ -8,11 +8,13 @@ struct RunnerMenuApp: App {
 
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = RunnerStore()
+    @State private var appUpdater = AppUpdater()
 
     var body: some Scene {
         MenuBarExtra {
             MenuContentView()
                 .environment(store)
+                .environment(appUpdater)
         } label: {
             MenuBarLabel(store: store)
         }
@@ -21,6 +23,7 @@ struct RunnerMenuApp: App {
         Window("Runner Menu", id: Self.windowID) {
             RunnerWindowView()
                 .environment(store)
+                .environment(appUpdater)
         }
         .defaultSize(width: 940, height: 580)
         .commands { RunnerCommands() }
@@ -28,6 +31,7 @@ struct RunnerMenuApp: App {
         Settings {
             SettingsView()
                 .environment(store)
+                .environment(appUpdater)
                 .frame(width: 480)
         }
     }

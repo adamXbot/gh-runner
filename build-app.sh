@@ -51,10 +51,57 @@ fi
 
 plutil -lint "$APP/Contents/Library/LaunchDaemons/$AGENT_PLIST" >/dev/null
 
+# --- Sparkle -----------------------------------------------------------------
+# SwiftPM links the XCFramework but assembles no bundle, so the framework has to
+# be embedded here or the app dies at launch with a dyld "image not found".
+echo "==> Embedding Sparkle"
+SPARKLE_FRAMEWORK="$(/usr/bin/find "$ROOT/.build/artifacts" -type d -name "Sparkle.framework" -path "*macos*" 2>/dev/null | /usr/bin/head -1)"
+if [[ -z "$SPARKLE_FRAMEWORK" ]]; then
+    echo "error: Sparkle.framework not found under .build/artifacts — run 'swift build' first" >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+cp -R "$SPARKLE_FRAMEWORK" "$APP/Contents/Frameworks/"
+echo "    $(basename "$(dirname "$SPARKLE_FRAMEWORK")")/Sparkle.framework"
+
+# An update Sparkle cannot verify is an update anyone can supply. Refuse to cut
+# a *signed* build without the public key: ad-hoc builds are for development and
+# disable updating at runtime instead (see AppUpdater), but a Developer ID build
+# is the one that ships.
+ED_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+if [[ "$SIGN_IDENTITY" != "-" && -z "$ED_KEY" ]]; then
+    echo "error: SUPublicEDKey is empty in Resources/Info.plist." >&2
+    echo "       A release build must be able to verify its own updates." >&2
+    echo "       Generate a keypair with Sparkle's generate_keys, paste the public" >&2
+    echo "       key into Info.plist, and store the private key as SPARKLE_PRIVATE_KEY." >&2
+    echo "       See docs/RELEASING.md." >&2
+    exit 1
+fi
+if [[ -z "$ED_KEY" ]]; then
+    echo "    note: SUPublicEDKey is empty — self-update stays disabled in this build."
+fi
+
 SIGN_ARGS=(--force --sign "$SIGN_IDENTITY")
 if [[ "$SIGN_IDENTITY" != "-" ]]; then
     SIGN_ARGS+=(--options runtime --timestamp)
 fi
+
+# Sign inside out. Sparkle ships its own helpers (an updater app, XPC services,
+# the Autoupdate tool); codesign --deep is documented as unreliable for exactly
+# this shape, so each nested executable is signed explicitly before the
+# framework that contains it.
+echo "==> Signing Sparkle helpers"
+SPARKLE_IN_APP="$APP/Contents/Frameworks/Sparkle.framework"
+while IFS= read -r helper; do
+    [[ -e "$helper" ]] || continue
+    codesign "${SIGN_ARGS[@]}" "$helper"
+    echo "    $(basename "$helper")"
+done < <(
+    /usr/bin/find "$SPARKLE_IN_APP" \
+        \( -name "*.xpc" -o -name "*.app" -o -name "Autoupdate" \) \
+        -maxdepth 4 2>/dev/null
+)
+codesign "${SIGN_ARGS[@]}" "$SPARKLE_IN_APP"
 
 echo "==> Signing Runner Agent"
 codesign "${SIGN_ARGS[@]}" --identifier "$AGENT_ID" "$APP/Contents/Resources/$AGENT_NAME"
