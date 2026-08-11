@@ -20,7 +20,19 @@
 
 set -uo pipefail
 
-ACCOUNT="ci-runner"
+# `runner`, not `ci-runner`, and the name is load-bearing twice over:
+#
+#   1. Runner Menu's dedicated-account mode hardcodes it —
+#      RunnerAgentProtocol.accountName == "runner", and the bundled
+#      LaunchDaemon plist declares UserName=runner. A signed plist cannot be
+#      rewritten at runtime, so an account by any other name is invisible to
+#      the app that manages this fleet.
+#   2. It makes the home directory /Users/runner, which is what GitHub's
+#      hosted macOS images use. Actions that bake in the hosted layout then
+#      just work — ruby/setup-ruby's prebuilt macOS Rubies, for instance, are
+#      compiled with /Users/runner/hostedtoolcache hardcoded and fail with
+#      EACCES under any other account name.
+ACCOUNT="runner"
 FULL_NAME="CI Runner"
 apply=false
 
@@ -29,7 +41,11 @@ usage() {
 Usage: setup-macos-ci-account.sh [options]
 
 Options:
-  --account NAME    Short name of the account to create (default: ci-runner).
+  --account NAME    Short name of the account to create (default: runner).
+                    Changing it breaks Runner Menu's dedicated-account mode,
+                    which hardcodes "runner", and forfeits the /Users/runner
+                    home path that hosted-layout actions expect. See the
+                    comment at the top of this script.
   --full-name NAME  Display name (default: "CI Runner").
   --apply           Actually create the account. Without it, this is a dry run.
   -h, --help        Show this help.

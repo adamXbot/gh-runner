@@ -33,8 +33,17 @@ checked out. Do not add steps that run for fork PRs or weaken the same-repositor
 Perform the administrative steps from a separate administrator account.
 
 1. Keep FileVault enabled in **System Settings → Privacy & Security → FileVault**.
-2. Create a standard macOS account used only for CI, for example `ci-runner`. Do not make it an
+2. Create a standard macOS account used only for CI, named **`runner`**. Do not make it an
    administrator and do not run the service as `root`.
+
+   The name is not arbitrary. Runner Menu's dedicated-account mode hardcodes it
+   (`RunnerAgentProtocol.accountName`, and `UserName=runner` in the bundled, signed
+   LaunchDaemon plist), so an account called anything else is invisible to the app. It also gives
+   the account the home directory `/Users/runner`, which is what GitHub's hosted macOS images use —
+   actions that bake in the hosted layout then work unchanged. `ruby/setup-ruby` is the one that
+   bites first: its prebuilt macOS Rubies are compiled with `/Users/runner/hostedtoolcache`
+   hardcoded, and fail with `EACCES: permission denied, mkdir '/Users/runner'` under any other
+   account name.
 3. Sign in to that account without signing in to an Apple Account or iCloud. Do not configure Mail,
    Messages, browser sync, a password manager, personal SSH keys, or personal Keychain items.
 4. Install the required Xcode or Command Line Tools. Do not copy an existing developer home
@@ -93,7 +102,7 @@ alert, not a request to weaken or skip the checks.
 ## Signing and releases
 
 Continue archiving and signing manually from a separate development account unless a distinct
-release boundary is set up. Never import a distribution certificate into the `ci-runner` account.
+release boundary is set up. Never import a distribution certificate into the `runner` account.
 
 If release automation is added later, use all of the following:
 

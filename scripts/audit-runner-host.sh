@@ -309,8 +309,8 @@ audit_runner_install() {
     fi
 
     # config.sh snapshots the PATH of whatever shell registered the runner into
-    # .path, and every job then runs with it. Register with `su ci-runner`
-    # instead of `su - ci-runner` and you capture the ADMINISTRATOR's PATH —
+    # .path, and every job then runs with it. Register with `su runner`
+    # instead of `su - runner` and you capture the ADMINISTRATOR's PATH —
     # including entries under their home, which this account cannot read.
     # Jobs then fail with EACCES on tool lookups, and worse, a readable entry
     # would silently hand CI the admin's binaries.
@@ -325,7 +325,7 @@ audit_runner_install() {
             while IFS= read -r entry; do
                 [ -n "$entry" ] && printf '        %s\n' "$entry"
             done <<< "$foreign"
-            printf '      Re-register from a clean login shell (su - ci-runner), or strip them:\n'
+            printf '      Re-register from a clean login shell (su - runner), or strip them:\n'
             printf '        tr ":" "\\n" < .path | grep -v "^/Users/OTHER" | paste -sd: - > .path.new && mv .path.new .path\n'
         else
             pass "Runner PATH contains no other user's home directory."
