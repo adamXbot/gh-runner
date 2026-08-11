@@ -235,7 +235,10 @@ done
 
 /bin/cat <<EOF
 # Then start each one as a launchd service, so they survive a reboot:
-for d in ${RUNNERS_ROOT}/*/; do (cd "\$d" && ./svc.sh install && ./svc.sh start); done
+# 'svc.sh install' fails with "exists" if the agent is already installed, so it
+# must not gate 'start' behind && — re-running this should be safe, and the
+# common case after a half-finished attempt is exactly "installed, not started".
+for d in ${RUNNERS_ROOT}/*/; do (cd "\$d" && { ./svc.sh install >/dev/null 2>&1 || true; } && ./svc.sh start); done
 
 # And check the host:
 ${SCRIPT_PATH}/audit-runner-host.sh --all-runners --check-visibility --check-updates
