@@ -1,0 +1,68 @@
+name: Release
+
+# Thin caller. The pipeline — test gate → sign → notarize → DMG → appcast →
+# GitHub Release → Homebrew cask PR — lives in privacykey/gh-workflows
+# (macos-sparkle-release.yml, pinned @v1).
+#
+# This repo has no .xcodeproj: it is a SwiftPM package that build-app.sh
+# assembles into a bundle. The shared workflow supports that shape — leave
+# xcodeproj empty and supply test_script + release_script, which own the
+# testing and building. See that repo's docs/macos-release.md, "Apps without
+# an Xcode project".
+#
+# Runs on a GitHub-hosted runner, deliberately. This repository is public, so
+# it must never touch the self-hosted fleet — and releases carry a Developer ID
+# certificate, which does not belong on a machine that runs pull request code.
+#
+# Secrets to create on adamXbot/gh-runner before the first release (there are
+# none today, so every run will fail loudly until then):
+#
+#   APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD  its passphrase
+#   APPLE_SIGNING_IDENTITY      "Developer ID Application: NAME (TEAMID)"
+#   APPLE_API_KEY               contents of the App Store Connect .p8
+#   APPLE_API_KEY_ID            10-character key ID
+#   APPLE_API_ISSUER            issuer UUID
+#   SPARKLE_PRIVATE_KEY         EdDSA private key from generate_keys
+#   HOMEBREW_TAP_TOKEN          optional; the cask PR step skips without it
+#
+# SPARKLE_PRIVATE_KEY belongs in the `macos-signing` environment, which is why
+# this caller uses `secrets: inherit` — an explicit mapping resolves in the
+# caller's context, which has no environment, and comes back empty.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag to release as (e.g. v1.1.0). Must match CFBundleShortVersionString.'
+        required: true
+
+# Deliberate duplication of the called workflow's concurrency group: GitHub
+# evaluates workflow-level concurrency of a *called* workflow inconsistently.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# A called workflow can only reduce the caller's permissions, never raise them.
+# contents: write publishes the Release and pushes the appcast branch.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: privacykey/gh-workflows/.github/workflows/macos-sparkle-release.yml@v1
+    with:
+      # No xcodeproj/scheme: this is a package, not an Xcode project.
+      app_name: Runner Menu
+      test_script: ./run-tests.sh
+      release_script: ./scripts/release.sh
+      # Literal version, so the tag can be cross-checked against it.
+      version_plist: Resources/Info.plist
+      appcast_branch: gh-pages
+      cask_name: runner-menu
+      tap_repo: adamXbot/homebrew-tap
+      release_tag: ${{ inputs.release_tag || '' }}
+    secrets: inherit

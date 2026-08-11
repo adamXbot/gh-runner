@@ -12,6 +12,7 @@ private struct HomeContentHeightKey: PreferenceKey {
 /// The root panel shown from the menu bar item.
 struct MenuContentView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(AppUpdater.self) private var appUpdater
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
@@ -339,6 +340,18 @@ struct MenuContentView: View {
             .keyboardShortcut("n", modifiers: .command)
 
             Spacer()
+
+            Button {
+                appUpdater.checkForUpdates()
+            } label: {
+                Label("Check for App Updates", systemImage: "arrow.down.app")
+            }
+            // Distinct from the per-runner Updates screen, which updates the
+            // GitHub Actions runner rather than this app.
+            .help(appUpdater.canCheckForUpdates
+                  ? "Check for Runner Menu updates"
+                  : (appUpdater.unavailableReason ?? "Updates unavailable"))
+            .disabled(!appUpdater.canCheckForUpdates)
 
             Button {
                 openSettingsWindow()

@@ -26,5 +26,29 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Runner Menu — manage GitHub Actions self-hosted runners.</string>
+
+    <!-- Sparkle self-update.
+
+         SUPublicEDKey is the EdDSA public half of the keypair whose private
+         half signs each release (SPARKLE_PRIVATE_KEY in the release
+         workflow). Sparkle verifies every download against it.
+
+         It ships empty on purpose. An app that updates without verifying
+         signatures is a remote-code-execution channel, and this one manages
+         CI hosts — so AppUpdater disables updating entirely while the key is
+         absent rather than degrading to unverified installs, and
+         build-app.sh refuses to produce a signed release build without it.
+
+         To populate: generate a keypair once with Sparkle's generate_keys,
+         paste the printed public key here, and store the private key as the
+         SPARKLE_PRIVATE_KEY secret. See docs/RELEASING.md. -->
+    <key>SUPublicEDKey</key>
+    <string></string>
+    <key>SUFeedURL</key>
+    <string>https://adamxbot.github.io/gh-runner/appcast.xml</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>
