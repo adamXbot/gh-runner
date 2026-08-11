@@ -108,12 +108,32 @@ if ! $apply && ! $account_exists; then
 fi
 
 if ! $account_exists; then
+    # sysadminctl refuses to create a second account whose full name is already
+    # taken, which happens the moment you add a second CI account. Catch it here
+    # with a usable message rather than letting sysadminctl mumble about it.
+    realname_owner="$(/usr/bin/dscl . -search /Users RealName "$FULL_NAME" 2>/dev/null \
+        | /usr/bin/awk 'NR==1 {print $1}')"
+    if [ -n "$realname_owner" ] && [ "$realname_owner" != "$ACCOUNT" ]; then
+        bad "Full name '$FULL_NAME' already belongs to the account '$realname_owner'."
+        info "sysadminctl will refuse to create '$ACCOUNT' with a duplicate full name."
+        info "Give this one its own:"
+        info "  $(/usr/bin/basename "${BASH_SOURCE[0]}") --apply --full-name 'CI Runner ($ACCOUNT)'"
+        exit 1
+    fi
+
     step "Creating the account"
     info "You will be prompted twice: once for sudo, once for the new account's password."
     # -admin is deliberately absent. A CI account that can escalate is not a
     # boundary, it is a speed bump.
-    if ! sudo /usr/sbin/sysadminctl -addUser "$ACCOUNT" -fullName "$FULL_NAME" -password -; then
-        bad "Account creation failed."
+    sudo /usr/sbin/sysadminctl -addUser "$ACCOUNT" -fullName "$FULL_NAME" -password -
+
+    # Verify the outcome, do not trust the exit status. sysadminctl returns 0
+    # even when it declines to do anything — it will print "User with full name
+    # 'X' already exists" and still exit successfully, so a naive check reports
+    # a created account that is not there.
+    if ! /usr/bin/id "$ACCOUNT" >/dev/null 2>&1; then
+        bad "'$ACCOUNT' was not created."
+        info "sysadminctl exits 0 even when it refuses, so read its output above for the reason."
         exit 1
     fi
     ok "Created '$ACCOUNT'."
