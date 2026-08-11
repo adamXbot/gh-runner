@@ -17,6 +17,7 @@ struct MenuContentView: View {
 
     enum Route: Equatable {
         case home
+        case find
         case register
         case updates
         case log
@@ -130,7 +131,8 @@ struct MenuContentView: View {
     private var headerTitle: String {
         switch route {
         case .home: return "Runner Menu"
-        case .register: return "Add / Register Runner"
+        case .find: return "Runners on This Mac"
+        case .register: return "Register New Runner"
         case .updates: return "Runner Updates"
         case .log: return "Live Log"
         case .labels: return "Edit Labels"
@@ -144,6 +146,8 @@ struct MenuContentView: View {
         switch route {
         case .home:
             homeContent
+        case .find:
+            FindRunnersView { withAnimation { route = .home } }
         case .register:
             RegisterRunnerView { withAnimation { route = .home } }
         case .updates:
@@ -273,16 +277,22 @@ struct MenuContentView: View {
                 .foregroundStyle(.secondary)
             Text("No runners yet")
                 .font(.headline)
-            Text("Add an existing `actions-runner` folder, or register a new runner against one of your repositories.")
+            Text("If runners already exist on this Mac, find and monitor them. Registering is only for creating a new one against a repository.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button {
-                withAnimation { route = .register }
+                withAnimation { route = .find }
             } label: {
-                Label("Add Runner", systemImage: "plus")
+                Label("Find Runners on This Mac", systemImage: "magnifyingglass")
             }
             .buttonStyle(.borderedProminent)
+            Button {
+                withAnimation { route = .register }
+            } label: {
+                Label("Register New Runner", systemImage: "plus")
+            }
+            .buttonStyle(.link)
             if !store.ghAuth.authenticated {
                 Text(store.ghAuth.message ?? "Sign in with `gh auth login` to enable GitHub features.")
                     .font(.caption)
@@ -298,12 +308,17 @@ struct MenuContentView: View {
 
     private var footer: some View {
         HStack(spacing: 6) {
-            Button {
-                withAnimation { route = .register }
+            Menu {
+                Button { withAnimation { route = .find } } label: {
+                    Label("Find Runners on This Mac…", systemImage: "magnifyingglass")
+                }
+                Button { withAnimation { route = .register } } label: {
+                    Label("Register New Runner…", systemImage: "plus.circle")
+                }
             } label: {
                 Label("Add", systemImage: "plus")
             }
-            .help("Add or register a runner")
+            .help("Monitor an existing runner, or register a new one")
 
             Button {
                 store.selectedRunnerID = store.selectedRunner?.id

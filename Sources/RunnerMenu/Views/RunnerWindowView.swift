@@ -6,6 +6,7 @@ struct RunnerWindowView: View {
     @Environment(RunnerStore.self) private var store
     @State private var selection: SidebarItem? = .dashboard
     @State private var showRegister = false
+    @State private var showFind = false
 
     enum SidebarItem: Hashable {
         case dashboard
@@ -43,8 +44,21 @@ struct RunnerWindowView: View {
             .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
             .toolbar {
                 ToolbarItemGroup {
-                    Button { showRegister = true } label: { Label("Add Runner", systemImage: "plus") }
-                        .help("Add or register a runner")
+                    // Two distinct jobs, so two named actions. "Add Runner"
+                    // used to lead straight to registration, which asks for a
+                    // repository — the wrong question entirely when the runner
+                    // already exists and is already registered.
+                    Menu {
+                        Button { showFind = true } label: {
+                            Label("Find Runners on This Mac…", systemImage: "magnifyingglass")
+                        }
+                        Button { showRegister = true } label: {
+                            Label("Register New Runner…", systemImage: "plus.circle")
+                        }
+                    } label: {
+                        Label("Add Runner", systemImage: "plus")
+                    }
+                    .help("Monitor an existing runner, or register a new one")
                     Button { Task { await store.refreshAll() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                         .help("Refresh")
                         .keyboardShortcut("r", modifiers: .command)
@@ -60,11 +74,18 @@ struct RunnerWindowView: View {
         .onChange(of: selection) { _, sel in
             if case let .runner(id) = sel { store.selectedRunnerID = id }
         }
+        .sheet(isPresented: $showFind) {
+            NavigationStack {
+                FindRunnersView { showFind = false }
+                    .frame(width: 520)
+                    .navigationTitle("Runners on This Mac")
+            }
+        }
         .sheet(isPresented: $showRegister) {
             NavigationStack {
                 RegisterRunnerView { showRegister = false }
                     .frame(width: 460)
-                    .navigationTitle("Add / Register Runner")
+                    .navigationTitle("Register New Runner")
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showRegister = false } } }
             }
         }
