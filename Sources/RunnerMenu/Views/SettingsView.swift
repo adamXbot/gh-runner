@@ -88,7 +88,7 @@ struct SettingsView: View {
                         if store.runnerAgentRegistrationState == .notRegistered
                             || store.runnerAgentRegistrationState == .notFound {
                             Button("Register Agent") { Task { await store.registerRunnerAgent() } }
-                                .disabled(!store.runnerAccountExists || store.isWorkingWithRunnerAgent)
+                                .disabled(!store.runnerAccountStatus.isReady || store.isWorkingWithRunnerAgent)
                         }
                         if store.runnerAgentRegistrationState == .requiresApproval {
                             Button("Open Login Items") { store.openRunnerAgentSystemSettings() }

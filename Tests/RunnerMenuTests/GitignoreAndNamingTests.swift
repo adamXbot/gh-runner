@@ -2,7 +2,22 @@ import Foundation
 import Testing
 @testable import RunnerMenu
 
+@MainActor
 struct GitignoreAndNamingTests {
+    @Test func unfinishedRegistrationMarkerSurvivesAndKeepsItsIdentity() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RM-pending-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        #expect(PendingRegistration.load(from: dir) == nil)
+        let original = PendingRegistration(target: "owner/private-repo", name: "mac-private-repo")
+        try original.write(to: dir)
+        #expect(PendingRegistration.load(from: dir) == original)
+        #expect(PendingRegistration.load(from: dir) != PendingRegistration(target: "owner/other", name: original.name))
+        #expect(PendingRegistration.load(from: dir) != PendingRegistration(target: original.target, name: "another-runner"))
+    }
+
     @Test @MainActor func gitignoreEntryIsAddedAndDeduplicated() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("RM-gi-\(UUID().uuidString)")

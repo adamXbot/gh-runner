@@ -10,9 +10,10 @@ machine (for example, `~/actions-runner`).
 
 ## What it does
 
-- **Set up tokens from your repos, no PAT typing.** Reuses your existing `gh` login. Pick a repo you
-  administer, and the app mints a registration token (`…/actions/runners/registration-token`) and
-  runs `config.sh` for you. It filters the picker to the repos where you actually have admin.
+- **Set up tokens from your repos, no PAT typing.** Reuses your existing `gh` login. Pick a private
+  repo you administer, and the app checks its visibility, mints a registration token
+  (`…/actions/runners/registration-token`), and runs `config.sh` for you. Public repos remain visible
+  but unavailable in the picker.
 - **Start / stop the runner.** Either detached `./run.sh` (survives quitting the app) or a launchd
   **service** (`svc.sh`, also starts at login). It even detects a runner you started yourself in a
   terminal and lets you stop it.
@@ -30,8 +31,7 @@ machine (for example, `~/actions-runner`).
 
 - macOS 14+ (developed and tested on macOS 26 / Apple Silicon).
 - Swift toolchain (Command Line Tools is enough — **no full Xcode required**).
-- [`gh`](https://cli.github.com) installed and authenticated (`gh auth login`) with `repo` scope
-  (and `admin:org` if you register org-level runners).
+- [`gh`](https://cli.github.com) installed and authenticated (`gh auth login`) with `repo` scope.
 - An existing runner install (the GitHub-provided `actions-runner` folder). The app can also
   download and create a brand-new runner folder for you.
 - Dedicated-account mode additionally requires a standard macOS account with the short name
@@ -67,14 +67,15 @@ The app has **no Dock icon** — look for its glyph in the menu bar (top-right).
 
 ## Using it
 
-1. **First run** — choose whether jobs should run as the signed-in account or the dedicated
-   `runner` account. Current-account mode has full lifecycle control. Dedicated mode can register
-   and verify the signed Runner Agent, then discover runner-owned installations in read-only mode;
-   lifecycle controls remain fail-closed until the next phase.
-2. **Register** (Add → *Existing folder* / *New runner*) — pick a repo from your admin list (or type
-   `owner/repo`, an org, or a URL under *Advanced*), name the runner, add labels, and hit
-   **Register**. *New runner* downloads + hash-verifies the latest runner package into a new folder
-   first.
+1. **First run** — choose full control under the signed-in account or monitoring under the dedicated
+   standard `runner` account. Dedicated mode verifies the signed Runner Agent and discovers
+   runner-owned installations. To create a runner under that account, use the linked manual
+   registration guide; app-based lifecycle controls are not available in that mode yet.
+2. **Register** (Add → *Register New Runner*) — the form starts in *New runner* mode. Pick a private
+   repo from your admin list (or type `owner/repo` under *Advanced*), name the runner, add labels,
+   and hit **Register**. The app checks for name collisions before downloading and hash-verifying
+   the latest runner package. *Existing folder* is available when you deliberately want to configure
+   or move an installation.
 3. **Start / stop** — the big button in the detail area, the play/stop button on each row, or Return.
    Choose the start method (detached `run.sh` vs launchd service) in **Settings**.
 4. **Observe** — watch CPU/mem/uptime and the current job; open **Log** for a live tail.

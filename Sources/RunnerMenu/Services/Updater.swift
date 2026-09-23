@@ -77,7 +77,8 @@ struct Updater: Sendable {
     func downloadVerifiedPackage(
         _ info: UpdateInfo,
         allowUnverified: Bool = false,
-        progress: @escaping @Sendable (Double) -> Void
+        progress: @escaping @Sendable (Double) -> Void,
+        onVerification: @escaping @Sendable () -> Void = {}
     ) async throws -> URL {
         guard let expected = info.expectedSHA256 else {
             if allowUnverified {
@@ -86,6 +87,7 @@ struct Updater: Sendable {
             throw UpdateError.hashUnavailable
         }
         let fileURL = try await download(info.asset, progress: progress)
+        onVerification()
         let actual = try Self.sha256Hex(of: fileURL)
         guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
             try? FileManager.default.removeItem(at: fileURL)

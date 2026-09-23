@@ -10,6 +10,56 @@ struct BannerMessage: Identifiable, Equatable {
     var kind: Kind
 }
 
+struct RegistrationIssue: Equatable {
+    let message: String
+    let recovery: String
+}
+
+enum RegistrationPhase: Sendable {
+    case checkingRepository, checkingName, requestingToken, preparingFolder
+    case checkingRelease, downloading(Double), verifying, extracting
+    case removingOld, registering, reconciling
+
+    var label: String {
+        switch self {
+        case .checkingRepository: return "Checking repository privacy…"
+        case .checkingName: return "Checking runner name…"
+        case .requestingToken: return "Requesting a one-time registration token…"
+        case .preparingFolder: return "Preparing runner folder…"
+        case .checkingRelease: return "Finding the latest runner release…"
+        case .downloading: return "Downloading runner package…"
+        case .verifying: return "Verifying download…"
+        case .extracting: return "Extracting runner package…"
+        case .removingOld: return "Removing the previous registration…"
+        case .registering: return "Registering with GitHub…"
+        case .reconciling: return "Checking the registration result…"
+        }
+    }
+
+    var downloadFraction: Double? {
+        if case .downloading(let fraction) = self { return fraction }
+        return nil
+    }
+}
+
+struct PendingRegistration: Codable, Equatable {
+    let target: String
+    let name: String
+
+    static func markerURL(in directory: URL) -> URL {
+        directory.appendingPathComponent(".runnermenu-pending-registration")
+    }
+
+    static func load(from directory: URL) -> Self? {
+        (try? Data(contentsOf: markerURL(in: directory)))
+            .flatMap { try? JSONDecoder().decode(Self.self, from: $0) }
+    }
+
+    func write(to directory: URL) throws {
+        try JSONEncoder().encode(self).write(to: Self.markerURL(in: directory), options: .atomic)
+    }
+}
+
 /// What clicking a recent job opens.
 enum JobClickAction: String, CaseIterable, Sendable {
     case github
@@ -35,7 +85,9 @@ final class RunnerStore {
     var ghAuth: GHAuthStatus = .unknown
     var selectedRunnerID: String?
     var banner: BannerMessage?
+    private(set) var registrationIssue: RegistrationIssue?
     var adminRepos: [GHRepo] = []
+    private(set) var adminReposError: String?
     var isLoadingRepos = false
     var lastRefresh: Date?
     var executionMode: RunnerExecutionMode = .currentAccount {
@@ -51,6 +103,7 @@ final class RunnerStore {
     private(set) var runnerAgentHealth: RunnerAgentHealth?
     private(set) var agentDiscoveredRunners: [RunnerAgentRunnerRecord] = []
     private(set) var runnerAgentError: String?
+    private(set) var runnerAccountStatus: RunnerAccountStatus = RunnerAgentManager.runnerAccountStatus
     private(set) var isWorkingWithRunnerAgent = false
     private(set) var inFlight: Set<String> = []
 
@@ -122,6 +175,7 @@ final class RunnerStore {
 
     private var pollTask: Task<Void, Never>?
     private var lastAuthCheck: Date?
+    private var repoLoadGeneration = 0
     private var lastAgentDiscovery: Date?
     /// When a transient (.starting/.stopping) state should expire and yield to reality.
     private var transientDeadline: [String: Date] = [:]
@@ -391,12 +445,12 @@ final class RunnerStore {
 
     // MARK: - Read-only Runner Agent
 
-    var runnerAccountExists: Bool { RunnerAgentManager.runnerAccountExists }
     var runnerAgentHasProductionSigningIdentity: Bool {
         RunnerAgentManager.hasProductionSigningIdentity
     }
     var runnerAgentReady: Bool {
-        guard runnerAgentRegistrationState == .enabled,
+        guard runnerAccountStatus.isReady,
+              runnerAgentRegistrationState == .enabled,
               let health = runnerAgentHealth else { return false }
         return health.protocolVersion == RunnerAgentConstants.protocolVersion
             && health.accountName == RunnerAgentConstants.accountName
@@ -404,6 +458,7 @@ final class RunnerStore {
     }
 
     func refreshRunnerAgent() async {
+        runnerAccountStatus = RunnerAgentManager.runnerAccountStatus
         runnerAgentRegistrationState = RunnerAgentManager.status
         runnerAgentHealth = nil
         runnerAgentError = nil
@@ -748,6 +803,47 @@ final class RunnerStore {
         return backend.serviceLogDirectory(for: instance)
     }
 
+    private func registrationConfirmed(in directory: URL, target: GHTarget, name: String) async throws -> Bool {
+        guard let config = RunnerConfig.load(from: directory),
+              GHTarget(scope: config.scope) == target,
+              config.agentName == name else { return false }
+        return try await github.listRunners(for: target).contains { $0.id == config.agentId }
+    }
+
+    private func ensureRunnerNameAvailable(_ name: String, on target: GHTarget,
+                                           keeping config: RunnerConfig? = nil) async throws {
+        let ownedID = GHTarget(scope: config?.scope ?? .unknown) == target ? config?.agentId : nil
+        let collision = try await github.listRunners(for: target).contains {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame && $0.id != ownedID
+        }
+        if collision { throw GitHubError.runnerNameInUse(name, target.displayString) }
+    }
+
+    private func failRegistration(_ error: Error, recovery: String) {
+        let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        failRegistration(message: message, recovery: recovery)
+    }
+
+    private func failRegistration(message: String, recovery: String) {
+        registrationIssue = RegistrationIssue(message: message, recovery: recovery)
+        banner = BannerMessage(text: message, kind: .error)
+    }
+
+    private func finishRegistration(directory: URL, target: GHTarget, name: String,
+                                    created: Bool) async {
+        try? FileManager.default.removeItem(at: PendingRegistration.markerURL(in: directory))
+        let path = directory.standardizedFileURL.path
+        if !runnerDirectoryPaths.contains(path) { runnerDirectoryPaths.append(path) }
+        else { rebuildRunners() }
+        selectedRunnerID = path
+        registrationIssue = nil
+        banner = BannerMessage(
+            text: "\(created ? "Created and registered" : "Registered") \(name) on \(target.displayString). The runner is stopped until you start it.",
+            kind: .success
+        )
+        await refreshAll()
+    }
+
     /// Register an existing runner directory against a GitHub target. Returns success.
     ///
     /// A runner folder can only serve one repo. If `directory` is ALREADY configured,
@@ -756,23 +852,40 @@ final class RunnerStore {
     /// wrong choice for "add a second repo" (use `createAndRegister` with a new folder).
     func registerExisting(directory: URL, target: GHTarget, name: String, labels: [String],
                           options: RegisterOptions = RegisterOptions(),
-                          reconfigure: Bool = false) async -> Bool {
+                          reconfigure: Bool = false,
+                          onProgress: @escaping @Sendable (RegistrationPhase) -> Void = { _ in }) async -> Bool {
         guard allowLocalRunnerMutation() else { return false }
         let key = "register-\(directory.path)"
         guard !inFlight.contains(key) else { return false }
         inFlight.insert(key); defer { inFlight.remove(key) }
+        registrationIssue = nil
+        var registrationStarted = false
+        let hadConfiguration = RunnerConfig.load(from: directory) != nil
         do {
             let existingConfig = RunnerConfig.load(from: directory)
             let instance = RunnerInstance(directory: directory, config: existingConfig)
 
+            onProgress(.checkingRepository)
+            try await github.assertPrivateRepository(target)
+
+            if existingConfig != nil, !reconfigure,
+               try await registrationConfirmed(in: directory, target: target, name: name) {
+                await finishRegistration(directory: directory, target: target, name: name, created: false)
+                return true
+            }
+
             // Already configured: block unless the user explicitly opted to reconfigure.
             if let existingConfig, !reconfigure {
                 let old = existingConfig.scope.displayString
-                banner = BannerMessage(
-                    text: "This folder already runs a runner for \(old). One folder serves one repo — to add a runner for \(target.displayString) while keeping this one, use “New runner” (a separate folder). To move this runner instead, choose Reconfigure.",
-                    kind: .error)
+                failRegistration(message: "This folder already runs a runner for \(old). To add another repo, use New runner. To move this one, choose Reconfigure.",
+                                 recovery: "The existing runner remains configured; no changes were made.")
                 return false
             }
+
+            onProgress(.checkingName)
+            try await ensureRunnerNameAvailable(name, on: target, keeping: existingConfig)
+            onProgress(.requestingToken)
+            let token = try await github.createRegistrationToken(for: target)
 
             if statuses[instance.id]?.isRunning == true {
                 try await backend.stop(instance, pid: statuses[instance.id]?.pid, force: false)
@@ -783,6 +896,7 @@ final class RunnerStore {
             // configure an already-configured folder). Prefer a clean server-side removal;
             // fall back to local-only removal if we lack admin on the old repo.
             if let existingConfig, reconfigure {
+                onProgress(.removingOld)
                 if let oldTarget = GHTarget(scope: existingConfig.scope) {
                     do {
                         let removeToken = try await github.createRemoveToken(for: oldTarget)
@@ -795,25 +909,34 @@ final class RunnerStore {
                 }
             }
 
-            let token = try await github.createRegistrationToken(for: target)
             let request = RegistrationRequest(directory: directory, target: target, name: name,
                                               labels: labels, token: token.token, replace: true,
                                               runnerGroup: options.runnerGroup,
                                               disableUpdate: options.disableUpdate,
                                               ephemeral: options.ephemeral,
                                               noDefaultLabels: options.noDefaultLabels)
+            onProgress(.registering)
+            registrationStarted = true
             try await backend.register(request)
-            if !runnerDirectoryPaths.contains(directory.standardizedFileURL.path) {
-                runnerDirectoryPaths.append(directory.standardizedFileURL.path)
-            } else {
-                rebuildRunners()
-            }
-            selectedRunnerID = directory.standardizedFileURL.path
-            banner = BannerMessage(text: "Registered runner \(name) on \(target.displayString).", kind: .success)
-            await refreshAll()
+            await finishRegistration(directory: directory, target: target, name: name, created: false)
             return true
         } catch {
-            banner = BannerMessage(text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription, kind: .error)
+            if registrationStarted {
+                onProgress(.reconciling)
+                if (try? await registrationConfirmed(in: directory, target: target, name: name)) == true {
+                    await finishRegistration(directory: directory, target: target, name: name, created: false)
+                    return true
+                }
+            }
+            let recovery: String
+            if hadConfiguration && RunnerConfig.load(from: directory) == nil {
+                recovery = "The previous registration was removed and this folder is now unconfigured. Check GitHub for a new registration before retrying."
+            } else if registrationStarted {
+                recovery = "Check the runner's registration on GitHub before retrying. Your folder was kept."
+            } else {
+                recovery = "The selected folder was kept. Correct the issue and try again."
+            }
+            failRegistration(error, recovery: recovery)
             return false
         }
     }
@@ -823,46 +946,86 @@ final class RunnerStore {
                            name: String, labels: [String],
                            options: RegisterOptions = RegisterOptions(),
                            addToGitignore: Bool = false,
-                           progress: @escaping @Sendable (Double) -> Void) async -> Bool {
+                           onProgress: @escaping @Sendable (RegistrationPhase) -> Void) async -> Bool {
         guard allowLocalRunnerMutation() else { return false }
-        let key = "create-\(folderName)"
+        let newDir = parent.appendingPathComponent(folderName)
+        let key = "create-\(newDir.standardizedFileURL.path)"
         guard !inFlight.contains(key) else { return false }
         inFlight.insert(key); defer { inFlight.remove(key) }
+        registrationIssue = nil
+        var registrationStarted = false
         do {
-            let newDir = parent.appendingPathComponent(folderName)
-            // Refuse to clobber an already-configured runner in the target folder.
+            onProgress(.checkingRepository)
+            try await github.assertPrivateRepository(target)
+            let existingPending = PendingRegistration.load(from: newDir)
+            let matchesPending = existingPending == PendingRegistration(target: target.displayString, name: name)
             if RunnerConfig.load(from: newDir) != nil {
-                banner = BannerMessage(
-                    text: "“\(folderName)” already contains a configured runner. Choose a different folder name.",
-                    kind: .error)
+                guard matchesPending else {
+                    failRegistration(message: "“\(folderName)” already contains a configured runner.",
+                                     recovery: "Choose another folder name, or use Find Runners to monitor the existing installation.")
+                    return false
+                }
+                onProgress(.reconciling)
+                if try await registrationConfirmed(in: newDir, target: target, name: name) {
+                    await finishRegistration(directory: newDir, target: target, name: name, created: true)
+                    return true
+                }
+                failRegistration(message: "“\(folderName)” already contains a configured runner.",
+                                 recovery: "Check this folder and its GitHub registration before choosing another folder name.")
                 return false
             }
-            if FileManager.default.fileExists(atPath: newDir.appendingPathComponent("config.sh").path) == false {
-                try FileManager.default.createDirectory(at: newDir, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: newDir.path) {
+                guard matchesPending else {
+                    failRegistration(message: "“\(folderName)” already exists and is not an unfinished setup for this runner.",
+                                     recovery: "Choose another folder name, or use Existing folder to configure an installation already there.")
+                    return false
+                }
             }
-            if addToGitignore {
-                Self.addGitignoreEntry(folder: folderName, inParent: parent)
-            }
+            onProgress(.checkingName)
+            try await ensureRunnerNameAvailable(name, on: target)
+            onProgress(.requestingToken)
+            let token = try await github.createRegistrationToken(for: target)
             // Reuse the updater's verified download of the latest release.
+            onProgress(.checkingRelease)
             let placeholder = RunnerInstance(directory: newDir)
             let info = try await updater.checkForUpdate(placeholder)
-            let pkg = try await updater.downloadVerifiedPackage(info, progress: progress)
+            let pkg = try await updater.downloadVerifiedPackage(
+                info,
+                progress: { onProgress(.downloading($0)) },
+                onVerification: { onProgress(.verifying) }
+            )
+            defer { try? FileManager.default.removeItem(at: pkg) }
+            onProgress(.preparingFolder)
+            try FileManager.default.createDirectory(at: newDir, withIntermediateDirectories: true)
+            let pending = PendingRegistration(target: target.displayString, name: name)
+            try pending.write(to: newDir)
+            onProgress(.extracting)
             try await updater.extractPackage(at: pkg, into: newDir)
-            let token = try await github.createRegistrationToken(for: target)
             let request = RegistrationRequest(directory: newDir, target: target, name: name,
                                               labels: labels, token: token.token, replace: true,
                                               runnerGroup: options.runnerGroup,
                                               disableUpdate: options.disableUpdate,
                                               ephemeral: options.ephemeral,
                                               noDefaultLabels: options.noDefaultLabels)
+            onProgress(.registering)
+            registrationStarted = true
             try await backend.register(request)
-            runnerDirectoryPaths.append(newDir.standardizedFileURL.path)
-            selectedRunnerID = newDir.standardizedFileURL.path
-            banner = BannerMessage(text: "Created and registered \(name) on \(target.displayString).", kind: .success)
-            await refreshAll()
+            if addToGitignore { Self.addGitignoreEntry(folder: folderName, inParent: parent) }
+            await finishRegistration(directory: newDir, target: target, name: name, created: true)
             return true
         } catch {
-            banner = BannerMessage(text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription, kind: .error)
+            if registrationStarted {
+                onProgress(.reconciling)
+                if (try? await registrationConfirmed(in: newDir, target: target, name: name)) == true {
+                    if addToGitignore { Self.addGitignoreEntry(folder: folderName, inParent: parent) }
+                    await finishRegistration(directory: newDir, target: target, name: name, created: true)
+                    return true
+                }
+            }
+            let recovery = FileManager.default.fileExists(atPath: newDir.path)
+                ? "Runner files remain in \(newDir.path). This form keeps your choices; check GitHub if registration may have completed, then retry with the same folder."
+                : "No runner folder was created. Correct the issue and try again."
+            failRegistration(error, recovery: recovery)
             return false
         }
     }
@@ -909,19 +1072,34 @@ final class RunnerStore {
     /// Force a fresh `gh auth status` check (used by Settings).
     func forceAuthRecheck() async {
         lastAuthCheck = nil
+        let previousAccount = ghAuth.account
         ghAuth = await github.authStatus()
+        if previousAccount != ghAuth.account || !ghAuth.authenticated {
+            repoLoadGeneration += 1
+            adminRepos = []
+            adminReposError = nil
+            isLoadingRepos = false
+        }
         lastAuthCheck = Date()
     }
 
     func loadAdminRepos() {
         guard !isLoadingRepos else { return }
+        repoLoadGeneration += 1
+        let generation = repoLoadGeneration
         isLoadingRepos = true
+        adminRepos = []
+        adminReposError = nil
         Task { [self] in
-            defer { isLoadingRepos = false }
+            defer { if generation == repoLoadGeneration { isLoadingRepos = false } }
             do {
-                adminRepos = try await github.adminRepos()
+                let loaded = try await github.adminRepos()
+                if generation == repoLoadGeneration { adminRepos = loaded }
             } catch {
-                banner = BannerMessage(text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription, kind: .error)
+                guard generation == repoLoadGeneration else { return }
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                adminReposError = message
+                banner = BannerMessage(text: message, kind: .error)
             }
         }
     }
