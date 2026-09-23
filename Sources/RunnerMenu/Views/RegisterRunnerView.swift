@@ -13,12 +13,13 @@ struct RegisterRunnerView: View {
         var id: String { rawValue }
     }
 
-    @State private var mode: Mode = .existing
+    @State private var mode: Mode = .new
     @State private var search = ""
     @State private var selectedRepo: GHRepo?
     @State private var manualTarget = ""
     @State private var showAdvanced = false
     @State private var runnerName = ""
+    @State private var runnerNameEdited = false
     @State private var labels = ""
     @State private var existingDir: URL?
     @State private var reconfigure = false
@@ -27,7 +28,8 @@ struct RegisterRunnerView: View {
     @State private var folderNameEdited = false
     @State private var addToGitignore = false
     @State private var isWorking = false
-    @State private var downloadProgress: Double = 0
+    @State private var registrationPhase: RegistrationPhase?
+    @State private var operationIssue: RegistrationIssue?
     // Advanced registration options (map to config.sh flags).
     @State private var showOptions = false
     @State private var runnerGroup = ""
@@ -40,6 +42,10 @@ struct RegisterRunnerView: View {
             VStack(alignment: .leading, spacing: 14) {
                 if !store.ghAuth.authenticated {
                     authWarning
+                } else if let account = store.ghAuth.account {
+                    Label("Using GitHub CLI account \(account)", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Picker("Mode", selection: $mode) {
@@ -54,10 +60,26 @@ struct RegisterRunnerView: View {
                 optionsSection
                 directorySection
 
-                if isWorking && mode == .new {
-                    ProgressView(value: downloadProgress) {
-                        Text("Downloading runner package…").font(.caption)
+                if isWorking, let registrationPhase {
+                    if let fraction = registrationPhase.downloadFraction {
+                        ProgressView(value: fraction) { Text(registrationPhase.label).font(.caption) }
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(registrationPhase.label).font(.caption)
+                        }
                     }
+                }
+                if let operationIssue {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(operationIssue.message, systemImage: "exclamationmark.octagon.fill")
+                            .font(.callout.weight(.medium))
+                        Text(operationIssue.recovery).font(.caption)
+                    }
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color.red.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
                 }
 
                 registerButton
@@ -66,34 +88,49 @@ struct RegisterRunnerView: View {
         }
         .frame(height: 520)
         .onAppear {
-            if runnerName.isEmpty { runnerName = Self.defaultRunnerName() }
+            if runnerName.isEmpty { runnerName = Self.defaultRunnerName(for: resolvedTarget) }
             if existingDir == nil { existingDir = store.selectedRunner?.directory }
             // Default to the configured Runners folder, else ~/actions-runners — which
             // avoids macOS's Documents/Desktop/Downloads privacy prompts.
             if parentDir == nil { parentDir = store.runnersBaseDirectory ?? Self.defaultRunnersFolder }
             if folderName.isEmpty { folderName = Self.uniqueFolderName(base: suggestedFolderName, in: parentDir) }
-            store.loadAdminRepos()
+        }
+        .task {
+            await store.forceAuthRecheck()
+            if store.ghAuth.authenticated { store.loadAdminRepos() }
         }
         // Keep the new-folder name in sync with the chosen repo unless the user typed one,
         // de-duplicating against folders that already exist in the parent.
         .onChange(of: targetKey) { _, _ in
             if !folderNameEdited { folderName = Self.uniqueFolderName(base: suggestedFolderName, in: parentDir) }
+            if !runnerNameEdited { runnerName = Self.defaultRunnerName(for: resolvedTarget) }
+            operationIssue = nil
         }
         // Re-evaluate the name and gitignore suggestion when the parent changes.
         .onChange(of: parentDir) { _, _ in
             if !folderNameEdited { folderName = Self.uniqueFolderName(base: suggestedFolderName, in: parentDir) }
             addToGitignore = parentIsGitRepo
         }
+        .onChange(of: mode) { _, _ in operationIssue = nil }
     }
 
     // MARK: - Sections
 
     private var authWarning: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(store.ghAuth.message ?? "Sign in with `gh auth login` in Terminal to enable registration.")
+        VStack(alignment: .leading, spacing: 7) {
+            Label(store.ghAuth.message ?? "Sign in with gh auth login in Terminal to enable registration.",
+                  systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
+            Button("Check GitHub sign-in again") {
+                Task {
+                    await store.forceAuthRecheck()
+                    if store.ghAuth.authenticated { store.loadAdminRepos() }
+                }
+            }
+            .controlSize(.small)
         }
+        .foregroundStyle(.orange)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
         .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
@@ -101,8 +138,17 @@ struct RegisterRunnerView: View {
     private var repoSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionLabel(text: "Repository (admin access)")
+            Text("This fleet registers runners to private repositories only. Use GitHub-hosted runners for public repositories.")
+                .font(.caption2).foregroundStyle(.secondary)
             if store.isLoadingRepos {
                 HStack { ProgressView().controlSize(.small); Text("Loading your repositories…").font(.caption).foregroundStyle(.secondary) }
+            } else if let error = store.adminReposError {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Could not load repositories: \(error)")
+                    Button("Try loading again") { store.loadAdminRepos() }.controlSize(.small)
+                }
+                .font(.caption)
+                .foregroundStyle(.red)
             } else if store.adminRepos.isEmpty {
                 HStack {
                     Text("No admin repositories found.").font(.caption).foregroundStyle(.secondary)
@@ -122,8 +168,8 @@ struct RegisterRunnerView: View {
                 .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             }
 
-            DisclosureGroup("Advanced: enter owner/repo, org, or URL", isExpanded: $showAdvanced) {
-                TextField("e.g. octocat/hello-world or my-org", text: $manualTarget)
+            DisclosureGroup("Enter a private repository manually", isExpanded: $showAdvanced) {
+                TextField("e.g. octocat/hello-world", text: $manualTarget)
                     .textFieldStyle(.roundedBorder)
                     .font(.callout)
                     .padding(.top, 4)
@@ -132,37 +178,48 @@ struct RegisterRunnerView: View {
                         .font(.caption2)
                         .foregroundStyle(.red)
                 }
-                Text("Overrides the selection above. Use for orgs or repos you don't own.")
+                Text("Overrides the selection above. Runner Menu checks visibility and admin access before making changes.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             .font(.caption)
+            if !showAdvanced && !manualTarget.isEmpty {
+                Text(manualTargetError ?? "Manual target: \(manualTarget)")
+                    .font(.caption2)
+                    .foregroundStyle(manualTargetError == nil ? Color.secondary : Color.red)
+            }
         }
     }
 
     private func repoRow(_ repo: GHRepo) -> some View {
         let isSel = selectedRepo?.id == repo.id && manualTarget.isEmpty
-        return HStack(spacing: 6) {
-            Image(systemName: repo.isPrivate ? "lock.fill" : "book.closed")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(repo.fullName).font(.callout).lineLimit(1)
-            Spacer()
-            if isSel { Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint) }
-        }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(isSel ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
-        .contentShape(Rectangle())
-        .onTapGesture {
+        return Button {
             selectedRepo = repo
             manualTarget = ""
-            if runnerName.isEmpty { runnerName = Self.defaultRunnerName() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: repo.isPrivate ? "lock.fill" : "book.closed")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(repo.fullName).font(.callout).lineLimit(1)
+                if !repo.isPrivate { Text("Public").font(.caption2).foregroundStyle(.orange) }
+                Spacer()
+                if isSel { Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(isSel ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(!repo.isPrivate)
     }
 
     private var nameSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionLabel(text: "Runner")
-            TextField("Runner name", text: $runnerName)
+            TextField("Runner name", text: Binding(
+                get: { runnerName },
+                set: { runnerName = $0; runnerNameEdited = true; operationIssue = nil }
+            ))
                 .textFieldStyle(.roundedBorder)
             TextField("Labels (comma-separated, optional)", text: $labels)
                 .textFieldStyle(.roundedBorder)
@@ -246,7 +303,7 @@ struct RegisterRunnerView: View {
                 }
                 TextField("New folder name", text: Binding(
                     get: { folderName },
-                    set: { folderName = $0; folderNameEdited = true }
+                    set: { folderName = $0; folderNameEdited = true; operationIssue = nil }
                 ))
                 .textFieldStyle(.roundedBorder)
                 if !folderName.isEmpty && !Self.isValidFolderName(folderName) {
@@ -372,13 +429,18 @@ struct RegisterRunnerView: View {
 
     private var manualTargetError: String? {
         let manual = manualTarget.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !manual.isEmpty, GHTarget.parseManual(manual) == nil else { return nil }
-        return "Enter owner/repo, an organization, or a valid https://github.com URL."
+        guard !manual.isEmpty else { return nil }
+        guard let target = GHTarget.parseManual(manual) else {
+            return "Enter owner/repo or a valid https://github.com/owner/repo URL."
+        }
+        if case .org = target { return "Organization-wide runners are outside this fleet's private-repository policy." }
+        return nil
     }
 
     private var canRegister: Bool {
         guard store.ghAuth.authenticated, resolvedTarget != nil,
               !runnerName.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        if manualTargetError != nil || (manualTarget.isEmpty && selectedRepo?.isPrivate == false) { return false }
         // --no-default-labels requires at least one custom label.
         if noDefaultLabels && labelList.isEmpty { return false }
         switch mode {
@@ -393,7 +455,9 @@ struct RegisterRunnerView: View {
     private func register() async {
         guard let target = resolvedTarget else { return }
         isWorking = true
-        defer { isWorking = false }
+        registrationPhase = .checkingRepository
+        operationIssue = nil
+        defer { isWorking = false; registrationPhase = nil }
         let name = runnerName.trimmingCharacters(in: .whitespaces)
         let group = runnerGroup.trimmingCharacters(in: .whitespaces)
         let options = RegisterOptions(
@@ -408,17 +472,23 @@ struct RegisterRunnerView: View {
             guard let dir = existingDir else { return }
             ok = await store.registerExisting(directory: dir, target: target, name: name,
                                               labels: labelList, options: options,
-                                              reconfigure: reconfigure)
+                                              reconfigure: reconfigure,
+                                              onProgress: { phase in
+                                                  Task { @MainActor in registrationPhase = phase }
+                                              })
         case .new:
             guard let parent = parentDir else { return }
             ok = await store.createAndRegister(
                 parent: parent, folderName: folderName.trimmingCharacters(in: .whitespaces),
                 target: target, name: name, labels: labelList, options: options,
                 addToGitignore: addToGitignore,
-                progress: { frac in Task { @MainActor in downloadProgress = frac } }
+                onProgress: { phase in
+                    Task { @MainActor in registrationPhase = phase }
+                }
             )
         }
         if ok { onDone() }
+        else { operationIssue = store.registrationIssue }
     }
 
     // MARK: - Helpers
@@ -428,10 +498,16 @@ struct RegisterRunnerView: View {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("actions-runners")
     }
 
-    static func defaultRunnerName() -> String {
+    static func defaultRunnerName(for target: GHTarget? = nil) -> String {
         let host = Host.current().localizedName ?? "mac"
         let cleaned = host.components(separatedBy: CharacterSet.alphanumerics.inverted).joined(separator: "-")
-        return "\(cleaned.lowercased())-runner"
+        let suffix: String
+        if case .repo(_, let repository) = target {
+            suffix = sanitize(repository).lowercased()
+        } else {
+            suffix = "runner"
+        }
+        return "\(cleaned.lowercased())-\(suffix)"
     }
 
     private func chooseDirectory(title: String, canCreate: Bool) -> URL? {

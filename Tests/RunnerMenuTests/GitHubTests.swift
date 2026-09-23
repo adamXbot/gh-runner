@@ -12,6 +12,9 @@ struct GitHubTests {
         case .shell: return "shell"
         case .decodeFailed: return "decode"
         case .workflowCancellationDenied: return "cancel-permission"
+        case .registrationRequiresPrivateRepository: return "public-repo"
+        case .registrationRequiresRepository: return "org-repo"
+        case .runnerNameInUse: return "name-in-use"
         case nil: return "nil"
         }
     }
@@ -66,5 +69,39 @@ struct GitHubTests {
         ])
         #expect(GitHubError.workflowCancellationDenied(reference.repository)
             .errorDescription?.contains("Actions write permission") == true)
+    }
+
+    @Test func registrationVisibilityPreflightRejectsPublicAndAllowsPrivate() async throws {
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gh-visibility-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: script) }
+        func setVisibility(_ value: String) throws {
+            try "#!/bin/sh\nprintf '%s\\n' '\(value)'\n".write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        }
+
+        let client = GitHubClient(ghPath: script.path)
+        let target = GHTarget.repo(owner: "owner", name: "project")
+        try setVisibility("false")
+        do {
+            try await client.assertPrivateRepository(target)
+            Issue.record("Public repository was accepted")
+        } catch GitHubError.registrationRequiresPrivateRepository(let repository) {
+            #expect(repository == "owner/project")
+        }
+
+        try setVisibility("true")
+        try await client.assertPrivateRepository(target)
+    }
+
+    @Test func registrationVisibilityPreflightRejectsOrganizationScope() async {
+        do {
+            try await GitHubClient(ghPath: "/no-such-gh").assertPrivateRepository(.org("example"))
+            Issue.record("Organization-wide target was accepted")
+        } catch GitHubError.registrationRequiresRepository {
+            // Rejected before invoking gh.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 }

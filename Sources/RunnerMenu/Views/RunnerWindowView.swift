@@ -70,9 +70,21 @@ struct RunnerWindowView: View {
         }
         .navigationTitle("Runner Menu")
         .frame(minWidth: 820, minHeight: 520)
+        .safeAreaInset(edge: .top) {
+            if let banner = store.banner {
+                BannerView(message: banner) { store.banner = nil }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
+        }
         .task { await store.refreshAll() }
         .onChange(of: selection) { _, sel in
             if case let .runner(id) = sel { store.selectedRunnerID = id }
+        }
+        .onChange(of: store.selectedRunnerID) { _, id in
+            if let id, store.runners.contains(where: { $0.id == id }) {
+                selection = .runner(id)
+            }
         }
         .sheet(isPresented: $showFind) {
             NavigationStack {

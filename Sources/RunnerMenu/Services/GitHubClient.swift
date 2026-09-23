@@ -89,6 +89,9 @@ enum GitHubError: LocalizedError {
     case rateLimited
     case decodeFailed(String)
     case workflowCancellationDenied(String)
+    case registrationRequiresPrivateRepository(String)
+    case registrationRequiresRepository
+    case runnerNameInUse(String, String)
     case shell(ShellError)
 
     var errorDescription: String? {
@@ -105,6 +108,12 @@ enum GitHubError: LocalizedError {
             return "Could not read the GitHub response for \(what)."
         case .workflowCancellationDenied(let repository):
             return "GitHub denied cancellation for \(repository). The active account needs Actions write permission (or `repo` scope)."
+        case .registrationRequiresPrivateRepository(let repository):
+            return "\(repository) is public. This fleet registers self-hosted runners only to private repositories. Use a GitHub-hosted runner for public projects."
+        case .registrationRequiresRepository:
+            return "This fleet registers runners to one private repository at a time. Enter owner/repo instead of an organization."
+        case .runnerNameInUse(let name, let repository):
+            return "A runner named ‘\(name)’ already exists on \(repository). Choose a different name so registration does not replace it."
         case .shell(let e):
             return e.errorDescription
         }
@@ -228,6 +237,19 @@ struct GitHubClient: Sendable {
     }
 
     // MARK: - Tokens
+
+    /// Fail before changing a local installation when the requested target is
+    /// outside this fleet's private, repository-scoped registration policy.
+    func assertPrivateRepository(_ target: GHTarget) async throws {
+        guard case .repo = target else { throw GitHubError.registrationRequiresRepository }
+        let result = try await gh(["api", "-H", "Accept: application/vnd.github+json", target.apiBase, "--jq", ".private"])
+        try mapCommonErrors(result, context: target.displayString)
+        switch result.out {
+        case "true": return
+        case "false": throw GitHubError.registrationRequiresPrivateRepository(target.displayString)
+        default: throw GitHubError.decodeFailed("repository visibility")
+        }
+    }
 
     func createRegistrationToken(for target: GHTarget) async throws -> GHRunnerToken {
         try await postToken(path: target.registrationTokenPath, context: target.displayString)

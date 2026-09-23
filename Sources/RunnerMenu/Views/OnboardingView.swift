@@ -46,7 +46,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Set up Runner Menu").font(.title2.weight(.semibold))
                 Text(step == .account
-                     ? "Choose which macOS account will own jobs and workspaces."
+                     ? "Choose how Runner Menu will work with runners on this Mac."
                      : "Discover existing GitHub Actions runners without changing them.")
                     .foregroundStyle(.secondary)
             }
@@ -61,14 +61,14 @@ struct OnboardingView: View {
     private var accountStep: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Where should runner jobs execute?")
+                Text("What would you like to manage?")
                     .font(.title3.weight(.semibold))
 
                 executionCard(
                     mode: .currentAccount,
                     icon: "person.crop.circle",
                     title: "This account",
-                    badge: "Full control available",
+                    badge: "Create and control runners",
                     detail: "Run jobs as \(NSFullUserName()) (\(NSUserName())). Existing local start, stop, registration, service, and update controls remain available."
                 )
 
@@ -76,8 +76,8 @@ struct OnboardingView: View {
                     mode: .dedicatedAccount,
                     icon: "person.crop.circle.badge.checkmark",
                     title: "Dedicated runner account",
-                    badge: "Read-only agent phase",
-                    detail: "Prepare a signed Runner Agent under the standard account named runner. This phase observes and discovers only; it does not launch jobs yet."
+                    badge: "Monitor existing runners",
+                    detail: "Connect a signed Runner Agent under the standard account named runner. Runner Menu can discover its runners, but cannot register or start them in this phase."
                 )
 
                 dedicatedSecurityInfo
@@ -164,7 +164,7 @@ struct OnboardingView: View {
                     "For now the app only discovers runner-owned installs over a signed, verified XPC connection. It launches no jobs and runs no arbitrary commands as that account yet.")
             }
 
-            Text("Choosing “This account” is fine for a private repo you fully trust; prefer a dedicated account (or an ephemeral VM) for public repos or fork pull requests.")
+            Text("Use self-hosted runners only for private repositories in this fleet. For public repositories, use GitHub-hosted runners. Keep workflow credentials away from the job-owning account.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -212,9 +212,14 @@ struct OnboardingView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if !store.runnerAccountExists {
-                Text("Create a standard macOS account with the short name ‘runner’ in System Settings › Users & Groups first.")
+            if !store.runnerAccountStatus.isReady {
+                Text(store.runnerAccountStatus.guidance)
                     .font(.caption).foregroundStyle(.orange)
+                Button("Open Users & Groups") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.UsersGroups-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
             } else if store.runnerAgentReady, let health = store.runnerAgentHealth {
                 Text("Connected as \(health.accountName) (UID \(health.effectiveUserID)) using protocol v\(health.protocolVersion).")
                     .font(.caption).foregroundStyle(.secondary)
@@ -237,7 +242,7 @@ struct OnboardingView: View {
                     Button("Register Runner Agent") {
                         Task { await store.registerRunnerAgent() }
                     }
-                    .disabled(!store.runnerAccountExists || store.isWorkingWithRunnerAgent)
+                    .disabled(!store.runnerAccountStatus.isReady || store.isWorkingWithRunnerAgent)
                 case .requiresApproval:
                     Button("Open Login Items Settings") { store.openRunnerAgentSystemSettings() }
                 case .enabled, .unknown:
@@ -286,10 +291,10 @@ struct OnboardingView: View {
                     Label("Choose Runner Folder…", systemImage: "folder.badge.plus")
                 }
             } else {
-                Label(
-                    "Discovery is active through the runner account. Lifecycle controls remain disabled in this read-only phase.",
-                    systemImage: "eye"
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Runner Menu can monitor this account's installations. To create a runner under it, follow the manual registration guide while lifecycle controls are being built.", systemImage: "eye")
+                    Link("Manual registration guide", destination: URL(string: "https://github.com/adamXbot/gh-runner/blob/main/docs/RUNNER_HARDENING.md")!)
+                }
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
@@ -422,7 +427,7 @@ struct OnboardingView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(store.executionMode == .dedicatedAccount && !store.runnerAgentReady)
             } else {
-                Button(store.executionMode == .dedicatedAccount ? "Finish Read-Only Setup" : "Finish Setup") {
+                Button(store.executionMode == .dedicatedAccount ? "Open Runner Monitor" : "Finish Setup") {
                     _ = store.completeOnboarding(selectedRunnerIDs: selectedRunnerIDs)
                 }
                 .buttonStyle(.borderedProminent)

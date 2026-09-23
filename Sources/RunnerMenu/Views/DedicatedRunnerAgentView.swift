@@ -34,7 +34,7 @@ struct DedicatedRunnerAgentView: View {
                 .foregroundStyle(store.runnerAgentReady ? .green : .orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Dedicated Runner Agent").font(.title2.weight(.semibold))
-                Text("The agent runs as ‘runner’; job launching remains disabled in this phase.")
+                Text("Monitor runners owned by ‘runner’. Registration and job control are not available here yet.")
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -66,8 +66,8 @@ struct DedicatedRunnerAgentView: View {
             SectionLabel(text: "Agent status")
             VStack(spacing: 8) {
                 StatRow(label: "Service", value: store.runnerAgentRegistrationState.label)
-                StatRow(label: "Required account", value: store.runnerAccountExists ? "runner exists" : "runner account missing",
-                        valueColor: store.runnerAccountExists ? .green : .orange)
+                StatRow(label: "Required account", value: store.runnerAccountStatus.isReady ? "standard runner account ready" : store.runnerAccountStatus.guidance,
+                        valueColor: store.runnerAccountStatus.isReady ? .green : .orange)
                 if let health = store.runnerAgentHealth {
                     StatRow(label: "Connected as", value: "\(health.accountName) · UID \(health.effectiveUserID)")
                     StatRow(label: "Home", value: health.homeDirectory, mono: true)
@@ -200,7 +200,9 @@ struct DedicatedRunnerAgentMenuView: View {
             Text("Lifecycle controls are disabled until the next agent phase.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Link("How to register a runner manually", destination: URL(string: "https://github.com/adamXbot/gh-runner/blob/main/docs/RUNNER_HARDENING.md")!)
 
             Divider()
             HStack {

@@ -5,6 +5,7 @@ import Testing
 /// The updater refuses to run rather than run unverified, so the conditions it
 /// refuses under are worth pinning down. An app that installs whatever its feed
 /// serves is a remote-code-execution channel, and this one manages CI hosts.
+@MainActor
 struct AppUpdaterTests {
     @Test func soundConfigurationIsAccepted() {
         let reason = AppUpdater.validate(
