@@ -13,6 +13,7 @@ easiest to review.
 ## Development setup
 
 You need macOS 14 or later, a Swift 6-compatible toolchain, and GitHub CLI for integration testing.
+For a new Mac, follow the [Ansible development setup](docs/DEV_MAC_SETUP.md) first.
 Clone the repository, then run:
 
 ```bash

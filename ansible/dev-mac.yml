@@ -1,0 +1,70 @@
+---
+# Run from the new Mac's own administrator account. This prepares the account
+# used to develop Runner Menu; it never creates or configures a CI runner.
+- name: Prepare a Mac for Runner Menu development
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    homebrew_bin_dir: "{{ '/opt/homebrew/bin' if ansible_facts['architecture'] == 'arm64' else '/usr/local/bin' }}"
+
+  tasks:
+    - name: Require a supported macOS host
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['system'] == 'Darwin'
+          - ansible_facts['distribution_version'] is version('14', '>=')
+        fail_msg: Runner Menu development requires macOS 14 or later.
+
+    - name: Check for native Homebrew
+      ansible.builtin.stat:
+        path: "{{ homebrew_bin_dir }}/brew"
+      register: homebrew_executable
+
+    - name: Require Homebrew before installing tools
+      ansible.builtin.assert:
+        that:
+          - homebrew_executable.stat.exists
+          - homebrew_executable.stat.executable | default(false)
+        fail_msg: "Install Homebrew for this Mac's architecture, then rerun this playbook: https://brew.sh/"
+
+    - name: Check the selected Apple developer tools
+      ansible.builtin.command: /usr/bin/xcode-select -p
+      register: developer_tools
+      changed_when: false
+      failed_when: false
+
+    - name: Require Command Line Tools or Xcode
+      ansible.builtin.assert:
+        that: developer_tools.rc == 0
+        fail_msg: "Install Apple's Command Line Tools with 'xcode-select --install', then rerun this playbook."
+
+    - name: Check the Swift toolchain
+      ansible.builtin.command: /usr/bin/swift --version
+      register: swift_version
+      changed_when: false
+      failed_when: false
+
+    - name: Require Swift 6 or later
+      ansible.builtin.assert:
+        that:
+          - swift_version.rc == 0
+          - swift_version.stdout is search('Swift version (6|[7-9]|[1-9][0-9])[.]')
+        fail_msg: "Select a Swift 6-compatible Command Line Tools or Xcode installation, then rerun this playbook."
+
+    - name: Install development command line tools
+      community.general.homebrew:
+        name:
+          - gh
+          - shellcheck
+        path: "{{ homebrew_bin_dir }}"
+        state: present
+
+    - name: Show remaining interactive setup
+      ansible.builtin.debug:
+        msg:
+          - "Tooling is ready. Run ./run-tests.sh and swift build in the Runner Menu checkout."
+          - "For GitHub integration, authenticate interactively with gh auth login --hostname github.com --scopes repo."
+          - "If this Mac will execute CI jobs, follow docs/RUNNER_HARDENING.md from a separate standard runner account."
