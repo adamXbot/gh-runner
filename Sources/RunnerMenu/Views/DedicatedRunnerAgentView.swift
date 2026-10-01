@@ -191,7 +191,7 @@ struct DedicatedRunnerAgentMenuView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(RunnerButtonStyle())
                 .disabled(store.isWorkingWithRunnerAgent)
             }
             .padding(10)
@@ -211,7 +211,7 @@ struct DedicatedRunnerAgentMenuView: View {
                 Spacer()
                 Button("Quit", role: .destructive) { NSApplication.shared.terminate(nil) }
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(RunnerButtonStyle())
         }
         .padding(16)
         .frame(width: 388)

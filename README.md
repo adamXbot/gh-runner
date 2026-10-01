@@ -169,6 +169,17 @@ against a throwaway repo):
 - [ ] Detached `run.sh` keeps running after you **Quit** the app; launchd service does too and starts at login.
 - [ ] Register into an existing folder; re-register (replace) to a different repo.
 - [ ] Register a **new** folder (downloads + verifies + configures).
+- [ ] Close registration while editing, reopen it, and confirm the target, custom name, labels,
+      folder, and options remain. Discard Draft resets the form; pending registration disables edits.
+- [ ] A failed removal during reconfiguration shows a cleanup warning and links to the previous
+      runner settings. The warning survives relaunch until Cleanup Confirmed is selected.
+- [ ] Runner controls, context menus, and batch actions respect ownership and pending operations.
+      Reopening Updates during a download shows its current phase and prevents duplicate updates.
+- [ ] Choose an invalid folder during setup; the error appears immediately and clears after correction.
+- [ ] Switch runners from Logs; the window stays on Logs with the same source and follow setting.
+      Missing, empty, and unreadable logs have distinct messages; Follow newest lines has a clear name.
+- [ ] Busy runners explain why updating is unavailable. Progress distinguishes downloading,
+      verification, stopping, installation, and restart.
 - [ ] Current job + recent job history match the runner's `_diag` logs during a real workflow run.
 - [ ] Live log tails both Runner and Worker sources; Copy and Reveal in Finder work.
 - [ ] Update check reports correct installed vs latest; SHA-256 card shows the published hash; a
@@ -178,4 +189,10 @@ against a throwaway repo):
 - [ ] On a Developer ID-signed/notarized build, register and approve the Runner Agent; confirm health
       reports account `runner`, a nonzero UID, the expected protocol version, and only runner-owned folders.
 - [ ] Works in dark mode and with increased contrast; VoiceOver reads runner rows and stats.
+- [ ] Custom runner/account/repository cards, job rows, and compact buttons show hover and press
+      feedback. Disabled controls stay inert; dragging out of a pressed button cancels the action.
+- [ ] Tab/Shift-Tab reaches runner selection and its separate Start/Stop control; Space activates
+      the focused button. Context menus and existing keyboard shortcuts still work.
+- [ ] With Reduce Motion enabled, custom feedback changes color immediately without scaling or
+      animated transitions, and busy/live status icons stop pulsing.
 - [ ] A repo you lack admin on surfaces a clear "needs admin" message rather than a raw error.

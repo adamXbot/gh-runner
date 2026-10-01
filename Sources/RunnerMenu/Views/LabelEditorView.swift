@@ -3,6 +3,7 @@ import SwiftUI
 /// Edit a runner's custom labels on GitHub (default labels are read-only).
 struct LabelEditorView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let instance: RunnerInstance
     var fixedHeight: CGFloat? = nil
 
@@ -64,7 +65,7 @@ struct LabelEditorView: View {
                     Text(label).font(.caption)
                     Spacer()
                     Button { removeLabel(label) } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.borderless).foregroundStyle(.secondary)
+                        .buttonStyle(RunnerButtonStyle()).foregroundStyle(.secondary)
                         .accessibilityLabel("Remove label \(label)")
                 }
             }
@@ -88,6 +89,7 @@ struct LabelEditorView: View {
             }
             .padding(.top, 4)
         }
+        .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: custom)
     }
 
     // MARK: - Logic

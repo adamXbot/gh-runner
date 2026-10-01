@@ -3,6 +3,7 @@ import AppKit
 
 struct SettingsView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
 
     @State private var launchAtLogin = LoginItem.isEnabled
@@ -150,7 +151,7 @@ struct SettingsView: View {
                         Button(role: .destructive) {
                             store.removeDirectory(instance)
                         } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(RunnerButtonStyle())
                         .help("Remove from list")
                     }
                 }
@@ -193,6 +194,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 500, height: 660)
+        .onAppear { refreshLoginItem() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { refreshLoginItem() }
+        }
         .navigationTitle("Runner Menu Settings")
         .task {
             await store.forceAuthRecheck()
@@ -212,8 +217,12 @@ struct SettingsView: View {
             loginError = nil
         } catch {
             loginError = error.localizedDescription
-            launchAtLogin = LoginItem.isEnabled
         }
+        refreshLoginItem()
+    }
+
+    private func refreshLoginItem() {
+        launchAtLogin = LoginItem.isEnabled
         loginStatus = LoginItem.statusDescription
     }
 

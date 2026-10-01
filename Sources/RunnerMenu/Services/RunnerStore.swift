@@ -4,7 +4,7 @@ import RunnerAgentProtocol
 
 /// A transient message shown as a banner in the panel.
 struct BannerMessage: Identifiable, Equatable {
-    enum Kind { case info, success, error }
+    enum Kind { case info, success, warning, error }
     let id = UUID()
     var text: String
     var kind: Kind
@@ -86,6 +86,70 @@ final class RunnerStore {
     var selectedRunnerID: String?
     var banner: BannerMessage?
     private(set) var registrationIssue: RegistrationIssue?
+    private(set) var registrationDraft = RegistrationDraft()
+    private(set) var discoveryIssue: String?
+    private(set) var runnerOperations: Set<String> = []
+    private(set) var updatePhases: [String: RunnerUpdatePhase] = [:]
+    private(set) var cleanupNotices: [String: RegistrationCleanupNotice] = [:] {
+        didSet {
+            if isReady, let data = try? JSONEncoder().encode(cleanupNotices) {
+                defaults.set(data, forKey: Keys.cleanupNotices)
+            }
+        }
+    }
+
+    func discardRegistrationDraft(afterSuccess: Bool = false) {
+        guard afterSuccess || !registrationDraft.isWorking else { return }
+        registrationDraft = RegistrationDraft()
+    }
+
+    func dismissCleanupNotice(for instance: RunnerInstance) {
+        cleanupNotices[instance.id] = nil
+    }
+
+    func mutationUnavailableReason(for instance: RunnerInstance) -> String? {
+        if executionMode != .currentAccount {
+            return "Dedicated-account mode currently supports monitoring only."
+        }
+        if !instance.isOwnedByCurrentUser {
+            return "Switch to the macOS account “\(instance.ownerAccountName ?? "the runner owner")” to control this runner."
+        }
+        if runnerOperations.contains(instance.id) {
+            return updatePhases[instance.id]?.label ?? "A runner operation is already in progress."
+        }
+        let state = status(for: instance).state
+        if state == .starting || state == .stopping {
+            return "Wait for the runner to finish \(state == .starting ? "starting" : "stopping")."
+        }
+        return nil
+    }
+
+    func canStart(_ instance: RunnerInstance) -> Bool {
+        instance.isConfigured && !status(for: instance).isRunning && mutationUnavailableReason(for: instance) == nil
+    }
+
+    func canStop(_ instance: RunnerInstance) -> Bool {
+        status(for: instance).isRunning && mutationUnavailableReason(for: instance) == nil
+    }
+
+    func updateUnavailableReason(for instance: RunnerInstance) -> String? {
+        mutationUnavailableReason(for: instance) ?? (status(for: instance).busy ? "Wait for the current job to finish before updating." : nil)
+    }
+
+    private func acquireRunnerOperation(_ instance: RunnerInstance, key: String) -> Bool {
+        if let reason = mutationUnavailableReason(for: instance) {
+            banner = BannerMessage(text: reason, kind: .info)
+            return false
+        }
+        runnerOperations.insert(instance.id)
+        inFlight.insert(key)
+        return true
+    }
+
+    private func releaseRunnerOperation(_ instance: RunnerInstance, key: String) {
+        runnerOperations.remove(instance.id)
+        inFlight.remove(key)
+    }
     var adminRepos: [GHRepo] = []
     private(set) var adminReposError: String?
     var isLoadingRepos = false
@@ -108,8 +172,9 @@ final class RunnerStore {
     private(set) var inFlight: Set<String> = []
 
     // MARK: - Settings (persisted in UserDefaults)
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private enum Keys {
+        static let cleanupNotices = "registrationCleanupNotices"
         static let dirs = "runnerDirectories"
         static let poll = "pollInterval"
         static let startMode = "startMode"
@@ -169,7 +234,8 @@ final class RunnerStore {
 
     // MARK: - Services
     private var github: GitHubClient { GitHubClient(ghPath: ghPath) }
-    private var updater: Updater { Updater(github: github) }
+    private var updater: any RunnerUpdating { injectedUpdater ?? Updater(github: github) }
+    private let injectedUpdater: (any RunnerUpdating)?
     private let backend: any RunnerExecutionBackend
     private let runnerAgentClient = RunnerAgentClient()
 
@@ -184,15 +250,23 @@ final class RunnerStore {
 
     // MARK: - Lifecycle
 
-    init(backend: any RunnerExecutionBackend = LocalRunnerExecutionBackend()) {
+    init(backend: any RunnerExecutionBackend = LocalRunnerExecutionBackend(),
+         defaults: UserDefaults = .standard, updater: (any RunnerUpdating)? = nil,
+         pollingEnabled: Bool = true) {
         self.backend = backend
+        self.defaults = defaults
+        self.injectedUpdater = updater
         loadSettings()
         rebuildRunners()
         isReady = true
-        startPolling()
+        if pollingEnabled { startPolling() }
     }
 
     private func loadSettings() {
+        if let data = defaults.data(forKey: Keys.cleanupNotices),
+           let notices = try? JSONDecoder().decode([String: RegistrationCleanupNotice].self, from: data) {
+            cleanupNotices = notices
+        }
         if let dirs = defaults.array(forKey: Keys.dirs) as? [String] {
             runnerDirectoryPaths = dirs
         } else {
@@ -401,12 +475,10 @@ final class RunnerStore {
             config: RunnerConfig.load(from: directory)
         )
         guard instance.looksLikeRunnerDirectory else {
-            banner = BannerMessage(
-                text: "\(directory.lastPathComponent) doesn't look like a runner directory (no run.sh/config.sh).",
-                kind: .error
-            )
+            discoveryIssue = "\(directory.lastPathComponent) doesn't contain run.sh and config.sh. Choose an installed GitHub Actions runner folder."
             return false
         }
+        discoveryIssue = nil
         if !discoveredRunners.contains(where: { $0.id == instance.id }) {
             discoveredRunners.append(instance)
             discoveredRunners.sort {
@@ -432,6 +504,7 @@ final class RunnerStore {
                 return false
             }
         }
+        discoveryIssue = nil
         onboardingCompleted = true
         defaults.set(true, forKey: Keys.onboardingCompleted)
         Task { await refreshAll() }
@@ -672,7 +745,7 @@ final class RunnerStore {
     // MARK: - Actions
 
     func start(_ instance: RunnerInstance) {
-        perform(key: "start-\(instance.id)", resetTransient: instance.id) { [self] in
+        perform(key: "start-\(instance.id)", instance: instance, resetTransient: instance.id) { [self] in
             setTransient(instance.id, .starting)
             try await backend.start(instance, mode: startMode)
             banner = BannerMessage(text: "Starting \(instance.displayName)…", kind: .info)
@@ -680,7 +753,7 @@ final class RunnerStore {
     }
 
     func stop(_ instance: RunnerInstance, force: Bool = false) {
-        perform(key: "stop-\(instance.id)", resetTransient: instance.id) { [self] in
+        perform(key: "stop-\(instance.id)", instance: instance, resetTransient: instance.id) { [self] in
             setTransient(instance.id, .stopping)
             let pid = statuses[instance.id]?.pid
             try await backend.stop(instance, pid: pid, force: force)
@@ -702,12 +775,12 @@ final class RunnerStore {
     /// Configured runners that are not currently running.
     var startableRunners: [RunnerInstance] {
         guard executionMode == .currentAccount else { return [] }
-        return runners.filter { $0.isConfigured && !(statuses[$0.id]?.isRunning ?? false) }
+        return runners.filter { canStart($0) }
     }
     /// Runners with a live process.
     var runningRunners: [RunnerInstance] {
         guard executionMode == .currentAccount else { return [] }
-        return runners.filter { statuses[$0.id]?.isRunning ?? false }
+        return runners.filter { canStop($0) }
     }
 
     func startAll() {
@@ -734,6 +807,7 @@ final class RunnerStore {
         inFlight.insert(key); defer { inFlight.remove(key) }
         var updated = 0, upToDate = 0, skipped = 0, failed = 0
         for r in runners where r.isConfigured {
+            if updateUnavailableReason(for: r) != nil { skipped += 1; continue }
             guard let info = try? await updater.checkForUpdate(r) else { failed += 1; continue }
             if !info.updateAvailable { upToDate += 1; continue }
             if statuses[r.id]?.busy == true { skipped += 1; continue }
@@ -742,14 +816,14 @@ final class RunnerStore {
             if ok { updated += 1 } else { failed += 1 }
         }
         var parts = ["\(updated) updated", "\(upToDate) up to date"]
-        if skipped > 0 { parts.append("\(skipped) skipped (busy/unverifiable)") }
+        if skipped > 0 { parts.append("\(skipped) skipped (busy, unavailable, or unverifiable)") }
         if failed > 0 { parts.append("\(failed) failed") }
         banner = BannerMessage(text: "Update all — " + parts.joined(separator: ", ") + ".",
                                kind: failed > 0 ? .error : .success)
     }
 
     func installService(_ instance: RunnerInstance) {
-        perform(key: "svc-install-\(instance.id)", resetTransient: instance.id) { [self] in
+        perform(key: "svc-install-\(instance.id)", instance: instance, resetTransient: instance.id) { [self] in
             setTransient(instance.id, .starting)
             try await backend.installService(instance)
             banner = BannerMessage(text: "Installed & started launchd service for \(instance.displayName).", kind: .success)
@@ -757,14 +831,14 @@ final class RunnerStore {
     }
 
     func installServiceOnly(_ instance: RunnerInstance) {
-        perform(key: "svc-install-\(instance.id)") { [self] in
+        perform(key: "svc-install-\(instance.id)", instance: instance) { [self] in
             try await backend.installServiceOnly(instance)
             banner = BannerMessage(text: "Installed launchd service for \(instance.displayName) (not started).", kind: .success)
         }
     }
 
     func startService(_ instance: RunnerInstance) {
-        perform(key: "svc-start-\(instance.id)", resetTransient: instance.id) { [self] in
+        perform(key: "svc-start-\(instance.id)", instance: instance, resetTransient: instance.id) { [self] in
             setTransient(instance.id, .starting)
             try await backend.startService(instance)
             banner = BannerMessage(text: "Started service for \(instance.displayName).", kind: .info)
@@ -772,7 +846,7 @@ final class RunnerStore {
     }
 
     func stopService(_ instance: RunnerInstance) {
-        perform(key: "svc-stop-\(instance.id)", resetTransient: instance.id) { [self] in
+        perform(key: "svc-stop-\(instance.id)", instance: instance, resetTransient: instance.id) { [self] in
             setTransient(instance.id, .stopping)
             try await backend.stopService(instance)
             banner = BannerMessage(text: "Stopped service for \(instance.displayName).", kind: .info)
@@ -780,7 +854,7 @@ final class RunnerStore {
     }
 
     func uninstallService(_ instance: RunnerInstance) {
-        perform(key: "svc-uninstall-\(instance.id)") { [self] in
+        perform(key: "svc-uninstall-\(instance.id)", instance: instance) { [self] in
             try await backend.uninstallService(instance)
             banner = BannerMessage(text: "Removed launchd service for \(instance.displayName).", kind: .success)
         }
@@ -788,7 +862,7 @@ final class RunnerStore {
 
     /// Run `svc.sh status` and surface the output.
     func showServiceStatus(_ instance: RunnerInstance) async {
-        guard allowLocalRunnerMutation() else { return }
+        guard allowLocalRunnerMutation(), instance.isOwnedByCurrentUser else { return }
         do {
             let status = try await backend.serviceStatus(instance)
             banner = BannerMessage(text: status, kind: .info)
@@ -839,8 +913,9 @@ final class RunnerStore {
         registrationIssue = nil
         banner = BannerMessage(
             text: "\(created ? "Created and registered" : "Registered") \(name) on \(target.displayString). The runner is stopped until you start it.",
-            kind: .success
+            kind: cleanupNotices[path] == nil ? .success : .warning
         )
+        if let cleanup = cleanupNotices[path] { banner?.text += " " + cleanup.message }
         await refreshAll()
     }
 
@@ -855,15 +930,19 @@ final class RunnerStore {
                           reconfigure: Bool = false,
                           onProgress: @escaping @Sendable (RegistrationPhase) -> Void = { _ in }) async -> Bool {
         guard allowLocalRunnerMutation() else { return false }
-        let key = "register-\(directory.path)"
-        guard !inFlight.contains(key) else { return false }
-        inFlight.insert(key); defer { inFlight.remove(key) }
+        let instance = RunnerInstance(directory: directory, config: RunnerConfig.load(from: directory))
+        let key = "register-\(instance.id)"
+        guard acquireRunnerOperation(instance, key: key) else {
+            failRegistration(message: mutationUnavailableReason(for: instance) ?? "Registration is unavailable.",
+                             recovery: "Wait for any operation to finish and use the account that owns this folder.")
+            return false
+        }
+        defer { releaseRunnerOperation(instance, key: key) }
         registrationIssue = nil
         var registrationStarted = false
         let hadConfiguration = RunnerConfig.load(from: directory) != nil
         do {
             let existingConfig = RunnerConfig.load(from: directory)
-            let instance = RunnerInstance(directory: directory, config: existingConfig)
 
             onProgress(.checkingRepository)
             try await github.assertPrivateRepository(target)
@@ -902,9 +981,11 @@ final class RunnerStore {
                         let removeToken = try await github.createRemoveToken(for: oldTarget)
                         try await backend.unregister(instance, token: removeToken.token)
                     } catch {
+                        cleanupNotices[instance.id] = RegistrationCleanupNotice(config: existingConfig)
                         try await backend.removeLocalConfig(directory)
                     }
                 } else {
+                    cleanupNotices[instance.id] = RegistrationCleanupNotice(config: existingConfig)
                     try await backend.removeLocalConfig(directory)
                 }
             }
@@ -930,7 +1011,7 @@ final class RunnerStore {
             }
             let recovery: String
             if hadConfiguration && RunnerConfig.load(from: directory) == nil {
-                recovery = "The previous registration was removed and this folder is now unconfigured. Check GitHub for a new registration before retrying."
+                recovery = "The local configuration was cleared and this folder is now unconfigured. Check both the previous and new registrations on GitHub before retrying."
             } else if registrationStarted {
                 recovery = "Check the runner's registration on GitHub before retrying. Your folder was kept."
             } else {
@@ -949,9 +1030,14 @@ final class RunnerStore {
                            onProgress: @escaping @Sendable (RegistrationPhase) -> Void) async -> Bool {
         guard allowLocalRunnerMutation() else { return false }
         let newDir = parent.appendingPathComponent(folderName)
-        let key = "create-\(newDir.standardizedFileURL.path)"
-        guard !inFlight.contains(key) else { return false }
-        inFlight.insert(key); defer { inFlight.remove(key) }
+        let instance = RunnerInstance(directory: newDir)
+        let key = "create-\(instance.id)"
+        guard acquireRunnerOperation(instance, key: key) else {
+            failRegistration(message: mutationUnavailableReason(for: instance) ?? "Registration is unavailable.",
+                             recovery: "Wait for the current operation to finish before retrying.")
+            return false
+        }
+        defer { releaseRunnerOperation(instance, key: key) }
         registrationIssue = nil
         var registrationStarted = false
         do {
@@ -990,7 +1076,7 @@ final class RunnerStore {
             let placeholder = RunnerInstance(directory: newDir)
             let info = try await updater.checkForUpdate(placeholder)
             let pkg = try await updater.downloadVerifiedPackage(
-                info,
+                info, allowUnverified: false,
                 progress: { onProgress(.downloading($0)) },
                 onVerification: { onProgress(.verifying) }
             )
@@ -1055,7 +1141,7 @@ final class RunnerStore {
             banner = BannerMessage(text: "This runner isn't bound to a repo/org that supports removal via API.", kind: .error)
             return
         }
-        perform(key: "unregister-\(instance.id)") { [self] in
+        perform(key: "unregister-\(instance.id)", instance: instance) { [self] in
             if statuses[instance.id]?.isRunning == true {
                 try await backend.stop(instance, pid: statuses[instance.id]?.pid, force: false)
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -1119,13 +1205,36 @@ final class RunnerStore {
                      allowUnverified: Bool = false,
                      progress: @escaping @Sendable (Double) -> Void) async -> Bool {
         guard allowLocalRunnerMutation() else { return false }
-        // Refuse to update mid-job.
-        if statuses[instance.id]?.busy == true {
-            banner = BannerMessage(text: UpdateError.runnerBusy.errorDescription ?? "Runner busy", kind: .error)
+        if let reason = updateUnavailableReason(for: instance) {
+            banner = BannerMessage(text: reason, kind: .info)
             return false
         }
+        let key = "update-\(instance.id)"
+        guard acquireRunnerOperation(instance, key: key) else { return false }
+        updatePhases[instance.id] = .downloading(0)
+        defer {
+            updatePhases[instance.id] = nil
+            releaseRunnerOperation(instance, key: key)
+        }
         do {
-            let pkg = try await updater.downloadVerifiedPackage(info, allowUnverified: allowUnverified, progress: progress)
+            let pkg = try await updater.downloadVerifiedPackage(
+                info, allowUnverified: allowUnverified,
+                progress: { [weak self] fraction in
+                    progress(fraction)
+                    Task { @MainActor in
+                        guard let self, case .downloading = self.updatePhases[instance.id] else { return }
+                        self.updatePhases[instance.id] = .downloading(fraction)
+                    }
+                },
+                onVerification: { [weak self] in
+                    Task { @MainActor in
+                        guard let self, case .downloading = self.updatePhases[instance.id] else { return }
+                        self.updatePhases[instance.id] = .verifying
+                    }
+                }
+            )
+            defer { try? FileManager.default.removeItem(at: pkg) }
+            updatePhases[instance.id] = .checkingIdle
 
             // The download takes tens of seconds; a job may have started meanwhile.
             // Re-check with a FRESH scan (not the polled cache) before anything destructive.
@@ -1138,6 +1247,7 @@ final class RunnerStore {
             let wasRunning = freshScan.listener(for: instance.directory) != nil
 
             if wasRunning {
+                updatePhases[instance.id] = .stopping
                 setTransient(instance.id, .stopping)
                 try await backend.stop(
                     instance,
@@ -1146,12 +1256,14 @@ final class RunnerStore {
                 )
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
+            updatePhases[instance.id] = .installing
             try await updater.extractPackage(at: pkg, into: instance.directory)
             // Refresh the recorded version.
             if let idx = runners.firstIndex(where: { $0.id == instance.id }) {
                 runners[idx].installedVersion = await backend.installedVersion(for: instance)
             }
             if wasRunning {
+                updatePhases[instance.id] = .restarting
                 setTransient(instance.id, .starting)
                 try await backend.start(instance, mode: startMode)
             }
@@ -1159,6 +1271,8 @@ final class RunnerStore {
             await refreshAll()
             return true
         } catch {
+            transientDeadline[instance.id] = .distantPast
+            await refreshAll()
             banner = BannerMessage(text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription, kind: .error)
             return false
         }
@@ -1176,13 +1290,11 @@ final class RunnerStore {
     /// Run an async action, tracking in-flight state and surfacing errors as banners.
     /// On failure, `resetTransient` clears any optimistic transient for that runner
     /// so a failed start/stop doesn't leave the UI stuck.
-    private func perform(key: String, resetTransient id: String? = nil,
+    private func perform(key: String, instance: RunnerInstance, resetTransient id: String? = nil,
                          _ work: @escaping () async throws -> Void) {
-        guard allowLocalRunnerMutation() else { return }
-        guard !inFlight.contains(key) else { return }
-        inFlight.insert(key)
+        guard allowLocalRunnerMutation(), acquireRunnerOperation(instance, key: key) else { return }
         Task { [self] in
-            defer { inFlight.remove(key) }
+            defer { releaseRunnerOperation(instance, key: key) }
             do {
                 try await work()
             } catch {

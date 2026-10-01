@@ -15,6 +15,7 @@ struct MenuContentView: View {
     @Environment(AppUpdater.self) private var appUpdater
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     enum Route: Equatable {
         case home
@@ -57,12 +58,13 @@ struct MenuContentView: View {
 
             content
                 .frame(maxWidth: .infinity)
+                .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: route)
 
             Divider()
             footer
         }
         .frame(width: 388)
-        .animation(.easeInOut(duration: 0.15), value: store.banner)
+        .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: store.banner)
         .task { await store.refreshAll() }
     }
 
@@ -89,7 +91,7 @@ struct MenuContentView: View {
             } label: {
                 Label("Quit Runner Menu", systemImage: "power")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(RunnerButtonStyle())
         }
         .padding(24)
         .frame(width: 388)
@@ -111,17 +113,17 @@ struct MenuContentView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(RunnerButtonStyle())
                 .help("Refresh (⌘R)")
                 .keyboardShortcut("r", modifiers: .command)
                 .accessibilityLabel("Refresh")
             } else {
                 Button {
-                    withAnimation { route = .home }
+                    route = .home
                 } label: {
                     Label("Back", systemImage: "chevron.left")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(RunnerButtonStyle())
                 .keyboardShortcut(.cancelAction)
             }
         }
@@ -148,12 +150,12 @@ struct MenuContentView: View {
         case .home:
             homeContent
         case .find:
-            FindRunnersView { withAnimation { route = .home } }
+            FindRunnersView { route = .home }
         case .register:
-            RegisterRunnerView { withAnimation { route = .home } }
+            RegisterRunnerView { route = .home }
         case .updates:
             if let runner = store.selectedRunner {
-                UpdatesView(instance: runner)
+                UpdatesView(instance: runner).id(runner.id)
             } else { missingRunner }
         case .log:
             if let runner = store.selectedRunner {
@@ -186,16 +188,15 @@ struct MenuContentView: View {
                             instance: instance,
                             isSelected: instance.id == store.selectedRunner?.id
                         )
-                        .onTapGesture { store.selectedRunnerID = instance.id }
                     }
 
                     if let selected = store.selectedRunner {
                         Divider().padding(.vertical, 2)
                         RunnerDetailView(
                             instance: selected,
-                            showLog: { withAnimation { route = .log } },
-                            showUpdates: { withAnimation { route = .updates } },
-                            showLabels: { withAnimation { route = .labels } }
+                            showLog: { route = .log },
+                            showUpdates: { route = .updates },
+                            showLabels: { route = .labels }
                         )
                     }
                 }
@@ -283,13 +284,13 @@ struct MenuContentView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button {
-                withAnimation { route = .find }
+                route = .find
             } label: {
                 Label("Find Runners on This Mac", systemImage: "magnifyingglass")
             }
             .buttonStyle(.borderedProminent)
             Button {
-                withAnimation { route = .register }
+                route = .register
             } label: {
                 Label("Register New Runner", systemImage: "plus")
             }
@@ -310,10 +311,10 @@ struct MenuContentView: View {
     private var footer: some View {
         HStack(spacing: 6) {
             Menu {
-                Button { withAnimation { route = .find } } label: {
+                Button { route = .find } label: {
                     Label("Find Runners on This Mac…", systemImage: "magnifyingglass")
                 }
-                Button { withAnimation { route = .register } } label: {
+                Button { route = .register } label: {
                     Label("Register New Runner…", systemImage: "plus.circle")
                 }
             } label: {
@@ -323,7 +324,7 @@ struct MenuContentView: View {
 
             Button {
                 store.selectedRunnerID = store.selectedRunner?.id
-                withAnimation { route = .updates }
+                route = .updates
             } label: {
                 Label("Updates", systemImage: "arrow.down.circle")
             }
@@ -370,7 +371,7 @@ struct MenuContentView: View {
             .keyboardShortcut("q", modifiers: .command)
         }
         .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
+        .buttonStyle(RunnerButtonStyle())
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }

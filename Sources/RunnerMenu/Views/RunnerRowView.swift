@@ -4,6 +4,7 @@ import AppKit
 /// One runner shown as a selectable card.
 struct RunnerRowView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let instance: RunnerInstance
     let isSelected: Bool
     @State private var confirmUnregister = false
@@ -11,11 +12,54 @@ struct RunnerRowView: View {
     private var status: RunnerLiveStatus { store.status(for: instance) }
 
     var body: some View {
+        HStack(spacing: 0) {
+            Button { store.selectedRunnerID = instance.id } label: {
+                selectionLabel
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(RunnerButtonStyle(surface: .card, cornerRadius: 10))
+            .accessibilityLabel("\(instance.displayName), \(status.state.label)\(status.busy ? ", busy" : "")")
+            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            .help("Show details for \(instance.displayName)")
+
+            if status.state != .notConfigured {
+                primaryButton
+                    .padding(.trailing, 10)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.5) : .clear)
+                .allowsHitTesting(false)
+        )
+        .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: isSelected)
+        .contextMenu { contextMenu }
+        .accessibilityElement(children: .contain)
+        .confirmationDialog(
+            "Unregister \(instance.displayName)?",
+            isPresented: $confirmUnregister,
+            titleVisibility: .visible
+        ) {
+            Button("Unregister from GitHub", role: .destructive) {
+                store.unregister(instance)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the runner registration from \(instance.scopeLabel ?? "GitHub") and clears its local configuration. The runner folder and its files will be kept.")
+        }
+    }
+
+    private var selectionLabel: some View {
         HStack(spacing: 10) {
             Image(systemName: status.symbolName)
                 .font(.title3)
                 .foregroundStyle(status.tintColor)
-                .symbolEffect(.pulse, isActive: status.busy)
+                .symbolEffect(.pulse, isActive: status.busy && !reduceMotion)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -51,48 +95,17 @@ struct RunnerRowView: View {
 
             statusTrailing
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.06))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(isSelected ? Color.accentColor.opacity(0.5) : .clear)
-        )
-        .contentShape(Rectangle())
-        .contextMenu { contextMenu }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(instance.displayName), \(status.state.label)\(status.busy ? ", busy" : "")")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .confirmationDialog(
-            "Unregister \(instance.displayName)?",
-            isPresented: $confirmUnregister,
-            titleVisibility: .visible
-        ) {
-            Button("Unregister from GitHub", role: .destructive) {
-                store.unregister(instance)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This removes the runner registration from \(instance.scopeLabel ?? "GitHub") and clears its local configuration. The runner folder and its files will be kept.")
-        }
     }
 
     @ViewBuilder
     private var statusTrailing: some View {
         if status.state == .notConfigured {
             Text("Configure").font(.caption).foregroundStyle(.secondary)
-        } else {
-            HStack(spacing: 8) {
-                if status.busy {
-                    Text("job").font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.2), in: Capsule())
-                        .foregroundStyle(.orange)
-                }
-                primaryButton
-            }
+        } else if status.busy {
+            Text("job").font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Color.orange.opacity(0.2), in: Capsule())
+                .foregroundStyle(.orange)
         }
     }
 
@@ -112,9 +125,10 @@ struct RunnerRowView: View {
                 if stopping { ProgressView().controlSize(.small) }
                 else { Image(systemName: "stop.fill") }
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(RunnerButtonStyle())
+            .frame(width: 28, height: 28)
             .help(foreign ? foreignControlExplanation : "Stop runner")
-            .disabled(stopping || foreign)
+            .disabled(!store.canStop(instance))
             .accessibilityLabel("Stop \(instance.displayName)")
         } else {
             Button {
@@ -123,9 +137,10 @@ struct RunnerRowView: View {
                 if starting { ProgressView().controlSize(.small) }
                 else { Image(systemName: "play.fill") }
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(RunnerButtonStyle())
+            .frame(width: 28, height: 28)
             .help(foreign ? foreignControlExplanation : "Start runner")
-            .disabled(starting || foreign)
+            .disabled(!store.canStart(instance))
             .accessibilityLabel("Start \(instance.displayName)")
         }
     }
@@ -144,10 +159,10 @@ struct RunnerRowView: View {
         if !instance.isOwnedByCurrentUser {
             Text(foreignControlExplanation)
         } else if status.isRunning {
-            Button("Stop Runner") { store.stop(instance) }
-            Button("Force Stop") { store.stop(instance, force: true) }
+            Button("Stop Runner") { store.stop(instance) }.disabled(!store.canStop(instance))
+            Button("Force Stop") { store.stop(instance, force: true) }.disabled(!store.canStop(instance))
         } else if status.state != .notConfigured {
-            Button("Start Runner") { store.start(instance) }
+            Button("Start Runner") { store.start(instance) }.disabled(!store.canStart(instance))
         }
         Divider()
         if let url = instance.gitHubURL {
@@ -163,6 +178,7 @@ struct RunnerRowView: View {
             Button("Unregister from GitHub…", role: .destructive) {
                 confirmUnregister = true
             }
+            .disabled(store.mutationUnavailableReason(for: instance) != nil)
         }
         Button("Remove from List", role: .destructive) { store.removeDirectory(instance) }
     }

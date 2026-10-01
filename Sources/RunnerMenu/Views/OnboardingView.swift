@@ -6,6 +6,7 @@ import RunnerAgentProtocol
 /// imports or discovers existing installations before normal controls appear.
 struct OnboardingView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum Step: Int, Hashable {
         case account
@@ -18,6 +19,9 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let banner = store.banner {
+                BannerView(message: banner) { store.banner = nil }.padding(.horizontal, 24).padding(.bottom, 8)
+            }
             Divider()
             Group {
                 switch step {
@@ -26,6 +30,7 @@ struct OnboardingView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: step)
             Divider()
             footer
         }
@@ -85,6 +90,7 @@ struct OnboardingView: View {
                 if store.executionMode == .dedicatedAccount { runnerAgentSetupPanel }
             }
             .padding(28)
+            .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: store.executionMode)
             .frame(maxWidth: 780)
             .frame(maxWidth: .infinity)
         }
@@ -137,7 +143,8 @@ struct OnboardingView: View {
                     .stroke(selected ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: selected ? 2 : 1)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RunnerButtonStyle(surface: .card, cornerRadius: 12))
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     /// Explains why a dedicated account is a security-hardening measure. Grounded in
@@ -284,6 +291,11 @@ struct OnboardingView: View {
             .frame(minHeight: 250)
             .background(.secondary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
 
+            if let issue = store.discoveryIssue {
+                Label(issue, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if store.executionMode == .currentAccount {
                 Button {
                     chooseRunnerFolder()

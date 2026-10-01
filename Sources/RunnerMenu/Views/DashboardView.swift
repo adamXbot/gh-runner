@@ -4,6 +4,7 @@ import AppKit
 /// Combined view of every runner: aggregate stats, a per-runner table, and one merged log.
 struct DashboardView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var mergedLines: [LogTailer.MergedLogLine] = []
     /// Live mode streams new log lines and auto-scrolls; pausing freezes the view.
     @State private var live = true
@@ -107,7 +108,7 @@ struct DashboardView: View {
                 .controlSize(.small)
                 .help(live ? "Pause the live log to read it" : "Resume live streaming")
                 Button { copyLog() } label: { Image(systemName: "doc.on.doc") }
-                    .buttonStyle(.borderless).help("Copy combined log").disabled(mergedLines.isEmpty)
+                    .buttonStyle(RunnerButtonStyle()).help("Copy combined log").disabled(mergedLines.isEmpty)
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -150,7 +151,7 @@ struct DashboardView: View {
             Image(systemName: "circle.fill")
                 .font(.system(size: 6))
                 .foregroundStyle(live ? .green : .secondary)
-                .symbolEffect(.pulse, isActive: live)
+                .symbolEffect(.pulse, isActive: live && !reduceMotion)
             Text(live ? "LIVE" : "PAUSED")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(live ? .green : .secondary)

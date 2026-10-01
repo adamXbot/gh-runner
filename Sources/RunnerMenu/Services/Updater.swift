@@ -34,13 +34,21 @@ enum UpdateError: LocalizedError {
         case .extractionFailed(let msg):
             return "Extracting the package failed: \(msg)"
         case .runnerBusy:
-            return "The runner is currently executing a job. Stop it (or wait) before updating."
+            return "The runner is currently executing a job. Wait for the job to finish before updating."
         }
     }
 }
 
 /// Checks for, downloads, verifies, and installs runner updates.
-struct Updater: Sendable {
+protocol RunnerUpdating: Sendable {
+    func checkForUpdate(_ instance: RunnerInstance) async throws -> UpdateInfo
+    func downloadVerifiedPackage(_ info: UpdateInfo, allowUnverified: Bool,
+                                 progress: @escaping @Sendable (Double) -> Void,
+                                 onVerification: @escaping @Sendable () -> Void) async throws -> URL
+    func extractPackage(at package: URL, into directory: URL) async throws
+}
+
+struct Updater: RunnerUpdating {
     var github: GitHubClient
 
     /// The macOS architecture slug used in the runner asset names.

@@ -54,8 +54,9 @@ struct BannerView: View {
             Button(action: onDismiss) {
                 Image(systemName: "xmark").font(.caption2)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RunnerButtonStyle())
             .foregroundStyle(.secondary)
+            .help("Dismiss message")
             .accessibilityLabel("Dismiss")
         }
         .padding(8)
@@ -67,6 +68,7 @@ struct BannerView: View {
         switch message.kind {
         case .info: return "info.circle.fill"
         case .success: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
         case .error: return "exclamationmark.octagon.fill"
         }
     }
@@ -74,6 +76,7 @@ struct BannerView: View {
         switch message.kind {
         case .info: return .accentColor
         case .success: return .green
+        case .warning: return .orange
         case .error: return .red
         }
     }
