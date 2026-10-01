@@ -3,6 +3,32 @@ import Testing
 @testable import RunnerMenu
 
 struct LogTailerTests {
+    @Test func consoleDistinguishesMissingEmptyAndUnreadableLogs() throws {
+        let runner = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: runner) }
+        let missing = LogTailer.readTail(in: runner, prefix: "Runner_")
+        #expect(missing.url == nil)
+        #expect(missing.issue == nil)
+        let log = LogTailer.diagDirectory(for: runner).appendingPathComponent("Runner_1.log")
+        try Data().write(to: log)
+        let empty = LogTailer.readTail(in: runner, prefix: "Runner_")
+        #expect(empty.url?.resolvingSymlinksInPath() == log.resolvingSymlinksInPath())
+        #expect(empty.lines.isEmpty)
+        #expect(empty.issue == nil)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: log.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: log.path) }
+        let unreadable = LogTailer.readTail(in: runner, prefix: "Runner_")
+        #expect(unreadable.issue?.contains("permissions") == true)
+        #expect(unreadable.lines.isEmpty)
+    }
+
+    @Test func missingDiagnosticDirectoryIsAnEmptyState() throws {
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let result = LogTailer.readTail(in: missing, prefix: "Worker_")
+        #expect(result.url == nil)
+        #expect(result.issue == nil)
+    }
+
     @Test func insightsPreserveHistoryAcrossRunnerLogRotations() throws {
         let runner = try makeRunnerDirectory()
         defer { try? FileManager.default.removeItem(at: runner) }

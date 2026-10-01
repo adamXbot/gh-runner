@@ -152,6 +152,53 @@ enum LogTailer {
         return Array(lines.suffix(maxLines))
     }
 
+    struct ReadResult: Equatable, Sendable {
+        let url: URL?
+        let lines: [String]
+        let issue: String?
+    }
+
+    static func readTail(in runnerDir: URL, prefix: String, maxLines: Int = 400) -> ReadResult {
+        do {
+            let files = try FileManager.default.contentsOfDirectory(
+                at: diagDirectory(for: runnerDir), includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ).filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "log" }
+            let newest = files.sorted {
+                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                return a == b ? $0.lastPathComponent > $1.lastPathComponent : a > b
+            }.first
+            guard let newest else { return ReadResult(url: nil, lines: [], issue: nil) }
+            return readTail(at: newest, maxLines: maxLines)
+        } catch {
+            if (error as NSError).code == NSFileReadNoSuchFileError {
+                return ReadResult(url: nil, lines: [], issue: nil)
+            }
+            return ReadResult(url: nil, lines: [], issue: logReadIssue(error))
+        }
+    }
+
+    static func readTail(at url: URL, maxLines: Int = 400) -> ReadResult {
+        do {
+            let content = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            return ReadResult(url: url, lines: content.isEmpty ? [] : Array(lines.suffix(maxLines)), issue: nil)
+        } catch {
+            if (error as NSError).code == NSFileReadNoSuchFileError {
+                return ReadResult(url: nil, lines: [], issue: nil)
+            }
+            return ReadResult(url: url, lines: [], issue: logReadIssue(error))
+        }
+    }
+
+    private static func logReadIssue(_ error: Error) -> String {
+        if (error as NSError).code == NSFileReadNoPermissionError {
+            return "Runner Menu cannot read this log. Check folder permissions or open it from the runner owner's macOS account."
+        }
+        return "Could not read the log: \(error.localizedDescription) Check the log folder in Finder."
+    }
+
     /// One line in the combined dashboard log, tagged with the runner it came from.
     struct MergedLogLine: Identifiable, Equatable, Sendable {
         let id: Int

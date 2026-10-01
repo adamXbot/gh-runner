@@ -4,7 +4,11 @@ import AppKit
 /// A full window: a Dashboard + per-runner detail in the sidebar, options on the right.
 struct RunnerWindowView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: SidebarItem? = .dashboard
+    @State private var detailTab: RunnerDetailTab = .overview
+    @State private var logSource: LogConsoleView.Source = .runner
+    @State private var followLogs = true
     @State private var showRegister = false
     @State private var showFind = false
 
@@ -77,6 +81,7 @@ struct RunnerWindowView: View {
                     .padding(.top, 8)
             }
         }
+        .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: store.banner)
         .task { await store.refreshAll() }
         .onChange(of: selection) { _, sel in
             if case let .runner(id) = sel { store.selectedRunnerID = id }
@@ -108,7 +113,7 @@ struct RunnerWindowView: View {
         switch selection {
         case .runner(let id):
             if let runner = store.runners.first(where: { $0.id == id }) {
-                RunnerWindowDetail(instance: runner).id(runner.id)
+                RunnerWindowDetail(instance: runner, tab: $detailTab, logSource: $logSource, followLogs: $followLogs).id(runner.id)
             } else {
                 DashboardView()
             }
@@ -139,6 +144,7 @@ struct RunnerWindowView: View {
 /// A compact sidebar row for one runner.
 private struct RunnerSidebarRow: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let instance: RunnerInstance
 
     private var status: RunnerLiveStatus { store.status(for: instance) }
@@ -147,7 +153,7 @@ private struct RunnerSidebarRow: View {
         HStack(spacing: 8) {
             Image(systemName: status.symbolName)
                 .foregroundStyle(status.tintColor)
-                .symbolEffect(.pulse, isActive: status.busy)
+                .symbolEffect(.pulse, isActive: status.busy && !reduceMotion)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(instance.displayName).lineLimit(1)
@@ -163,8 +169,10 @@ private struct RunnerSidebarRow: View {
         .contextMenu {
             if status.isRunning {
                 Button("Stop Runner") { store.stop(instance) }
+                    .disabled(!store.canStop(instance))
             } else if status.state != .notConfigured {
                 Button("Start Runner") { store.start(instance) }
+                    .disabled(!store.canStart(instance))
             }
             if let url = instance.gitHubURL {
                 Divider()
@@ -179,16 +187,20 @@ private struct RunnerSidebarRow: View {
     }
 }
 
+enum RunnerDetailTab: String, CaseIterable, Identifiable {
+    case overview = "Overview", logs = "Logs", updates = "Updates"
+    var id: String { rawValue }
+}
+
 /// The detail pane for a single runner: Overview / Logs / Updates tabs + toolbar actions.
 private struct RunnerWindowDetail: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let instance: RunnerInstance
 
-    enum Tab: String, CaseIterable, Identifiable {
-        case overview = "Overview", logs = "Logs", updates = "Updates"
-        var id: String { rawValue }
-    }
-    @State private var tab: Tab = .overview
+    @Binding var tab: RunnerDetailTab
+    @Binding var logSource: LogConsoleView.Source
+    @Binding var followLogs: Bool
     @State private var confirmUnregister = false
     @State private var showLabels = false
 
@@ -197,6 +209,7 @@ private struct RunnerWindowDetail: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: tab)
             .navigationTitle(instance.displayName)
             .navigationSubtitle(instance.scopeLabel ?? "Not configured")
             .toolbar { toolbarContent }
@@ -234,9 +247,9 @@ private struct RunnerWindowDetail: View {
                 .padding(20)
             }
         case .logs:
-            LogConsoleView(instance: instance, fixedHeight: nil)
+            LogConsoleView(instance: instance, fixedHeight: nil, source: $logSource, autoScroll: $followLogs)
         case .updates:
-            UpdatesView(instance: instance, fixedHeight: nil)
+            UpdatesView(instance: instance, fixedHeight: nil).id(instance.id)
         }
     }
 
@@ -244,7 +257,7 @@ private struct RunnerWindowDetail: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             Picker("View", selection: $tab) {
-                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(RunnerDetailTab.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .fixedSize()
@@ -262,6 +275,7 @@ private struct RunnerWindowDetail: View {
                     Divider()
                     Button("Edit Labels…") { showLabels = true }
                     Button("Unregister from GitHub…", role: .destructive) { confirmUnregister = true }
+                        .disabled(store.mutationUnavailableReason(for: instance) != nil)
                 }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
@@ -271,16 +285,16 @@ private struct RunnerWindowDetail: View {
 
     @ViewBuilder
     private var primaryButton: some View {
-        let starting = store.isInFlight("start-\(instance.id)")
-        let stopping = store.isInFlight("stop-\(instance.id)")
         if status.state == .notConfigured {
             EmptyView()
         } else if status.isRunning {
-            Button { store.stop(instance) } label: { Label("Stop", systemImage: "stop.fill") }
-                .disabled(stopping)
+            Button { store.stop(instance) } label: { Label(status.state == .starting ? "Starting…" : "Stop", systemImage: "stop.fill") }
+                .disabled(!store.canStop(instance))
+                .help(store.mutationUnavailableReason(for: instance) ?? "Stop runner")
         } else {
-            Button { store.start(instance) } label: { Label("Start", systemImage: "play.fill") }
-                .disabled(starting)
+            Button { store.start(instance) } label: { Label(status.state == .stopping ? "Stopping…" : "Start", systemImage: "play.fill") }
+                .disabled(!store.canStart(instance))
+                .help(store.mutationUnavailableReason(for: instance) ?? "Start runner")
         }
     }
 }

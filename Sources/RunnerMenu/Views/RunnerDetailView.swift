@@ -4,6 +4,7 @@ import AppKit
 /// Inline detail + stats + controls for the selected runner.
 struct RunnerDetailView: View {
     @Environment(RunnerStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let instance: RunnerInstance
     var showLog: () -> Void
     var showUpdates: () -> Void
@@ -19,6 +20,27 @@ struct RunnerDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if !instance.isOwnedByCurrentUser {
+                foreignAccountNotice
+            }
+            if let notice = store.cleanupNotices[instance.id] {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Previous registration needs checking", systemImage: "exclamationmark.triangle")
+                        .font(.callout.weight(.medium))
+                    Text(notice.message).font(.caption)
+                    HStack {
+                        if let url = notice.settingsURL { Link("Open previous runner settings", destination: url) }
+                        Spacer()
+                        Button("Cleanup Confirmed") { store.dismissCleanupNotice(for: instance) }
+                    }
+                    .font(.caption)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            }
+            if let phase = store.updatePhases[instance.id] {
+                Label(phase.label, systemImage: "shippingbox").font(.caption)
+            }
             if showsPrimaryControl {
                 primaryControl
             }
@@ -54,7 +76,7 @@ struct RunnerDetailView: View {
         let starting = store.isInFlight("start-\(instance.id)")
         let stopping = store.isInFlight("stop-\(instance.id)")
         if !instance.isOwnedByCurrentUser {
-            foreignAccountNotice
+            EmptyView()
         } else if status.state == .notConfigured {
             Text("This directory has no runner registration yet. Use “Add / Register Runner” to bind it to a repository.")
                 .font(.caption)
@@ -63,24 +85,24 @@ struct RunnerDetailView: View {
             Button {
                 store.stop(instance)
             } label: {
-                Label(stopping ? "Stopping…" : "Stop Runner", systemImage: "stop.fill")
+                Label(status.state == .starting ? "Starting…" : (stopping ? "Stopping…" : "Stop Runner"), systemImage: "stop.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
             .tint(.red)
             .controlSize(.large)
-            .disabled(stopping)
+            .disabled(!store.canStop(instance))
             .keyboardShortcut(.return, modifiers: [])
         } else {
             Button {
                 store.start(instance)
             } label: {
-                Label(starting ? "Starting…" : "Start Runner", systemImage: "play.fill")
+                Label(status.state == .stopping ? "Stopping…" : (starting ? "Starting…" : "Start Runner"), systemImage: "play.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(starting)
+            .disabled(!store.canStart(instance))
             .keyboardShortcut(.return, modifiers: [])
         }
     }
@@ -133,15 +155,13 @@ struct RunnerDetailView: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RunnerButtonStyle(surface: .row, cornerRadius: 8))
                 .disabled(record == nil)
                 .help(record != nil ? "Open running job — \(store.jobClickAction.label)" : "")
 
                 if record != nil {
                     Button(role: .destructive) {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            confirmCancelJob = true
-                        }
+                        confirmCancelJob = true
                     } label: {
                         if canceling {
                             ProgressView().controlSize(.small)
@@ -150,7 +170,7 @@ struct RunnerDetailView: View {
                         }
                     }
                     .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(RunnerButtonStyle())
                     .foregroundStyle(.red)
                     .disabled(canceling || confirmCancelJob)
                     .help("Cancel this GitHub Actions job")
@@ -170,9 +190,7 @@ struct RunnerDetailView: View {
                 HStack(spacing: 8) {
                     Spacer()
                     Button("Keep Running") {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            confirmCancelJob = false
-                        }
+                        confirmCancelJob = false
                     }
                     Button("Cancel Job", role: .destructive) {
                         confirmCancelJob = false
@@ -186,6 +204,7 @@ struct RunnerDetailView: View {
         }
         .padding(8)
         .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: confirmCancelJob)
     }
 
     // MARK: - Stats
@@ -214,8 +233,7 @@ struct RunnerDetailView: View {
     // MARK: - Service control
 
     private var serviceBusy: Bool {
-        ["svc-install", "svc-uninstall", "svc-start", "svc-stop"]
-            .contains { store.isInFlight("\($0)-\(instance.id)") }
+        store.runnerOperations.contains(instance.id)
     }
 
     private var serviceControl: some View {
@@ -225,7 +243,7 @@ struct RunnerDetailView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(status.serviceInstalled ? "launchd service installed" : "No launchd service")
                     .font(.caption.weight(.medium))
-                Text(status.serviceInstalled ? "Runs at login (svc.sh / launchd)." : "Install to keep the runner alive after quitting this app.")
+                Text(status.serviceInstalled ? "Runs at login (svc.sh / launchd)." : "Install to start this runner automatically at login.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
@@ -254,7 +272,7 @@ struct RunnerDetailView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .disabled(!instance.isConfigured || serviceBusy)
+            .disabled(!instance.isConfigured || store.mutationUnavailableReason(for: instance) != nil)
         }
         .padding(8)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
@@ -304,9 +322,11 @@ struct RunnerDetailView: View {
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.tertiary)
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RunnerButtonStyle(surface: .row))
                 .help("Open job — \(store.jobClickAction.label)")
                 .contextMenu { jobContextMenu(job) }
                 .accessibilityElement(children: .combine)

@@ -45,7 +45,7 @@ that act on the selection; Finder integration (Reveal in Finder); multi-represen
 |---|---|---|---|---|---|---|---|---|
 | Menu-bar glyph | `MenuBarExtra` label (SF Symbol) | — | Click/return opens panel | — | — | — | — | Labelled: "runner online / busy / none" |
 | Onboarding | Account-choice cards + discovery `List` | Multi-select discovered runners | Full keyboard; Continue/Back | — | — | — | Completion, execution mode, imported folders | Native buttons, checkboxes, labels |
-| Runner list | `ScrollView` + selectable cards | Single-select (tap) | Arrow/tab focus; Return = start/stop selected | Copy name / repo URL (context) | — (future: drag folder out) | Start/Stop, Open on GitHub, Copy URL/Name, Reveal in Finder, Unregister, Remove | Selected runner id | Cards expose `.isSelected`, combined label |
+| Runner list | `ScrollView` + selectable button cards | Single-select (click/Space) | Tab/Shift-Tab focus; Return = start/stop selected | Copy name / repo URL (context) | — (future: drag folder out) | Start/Stop, Open on GitHub, Copy URL/Name, Reveal in Finder, Unregister, Remove | Selected runner id | Selection exposes `.isSelected` and a combined label; Start/Stop is a separate button |
 | Runner detail | `VStack` of `StatRow`s | reflects list selection | Return primary; buttons focusable | All stat values `.textSelection` | — | (inherits row) | — | Each stat is a combined label |
 | Recent jobs | list rows w/ result glyph | — | — | selectable text | — | — | — | icon + name + relative time |
 | Register screen | `Form`-like, `Picker`, repo `List`, `TextField`s | repo row select | Field tab order; Esc back | native text fields | — | — | typed values (session) | labelled fields |
@@ -115,9 +115,17 @@ execution backend. See [Cross-user runner architecture](docs/CROSS_USER_ARCHITEC
 
 Persisted in `UserDefaults` (and `SMAppService`):
 - Runner directories (the managed set) · refresh interval · start method (run.sh vs launchd) ·
-  `gh` path · selected runner · login-item state · onboarding completion · execution-account mode.
+  `gh` path · login-item state · onboarding completion · execution-account mode · unresolved registration cleanup notices.
 
-Transient (not persisted): download progress, in-flight action set, banners, current panel route.
+Session state: the registration draft, progress, and recoverable error live in `RunnerStore`, so closing
+or changing panels does not discard them. Drafts reset after success or explicit Discard Draft.
+Lifecycle, service, registration, and update work share one lock per runner; Start/Stop remain
+unavailable until starting/stopping settles. Ownership and dedicated-mode capabilities apply in every
+surface and batch action. Runner update phases reflect the actual download, verification, idle check,
+stop, installation, and restart.
+
+Window state: the detail tab, log source, and follow setting survive runner selection changes.
+Transient (not persisted): selected runner, operations, banners, current panel route, and window state.
 Runner Agent registration status, health, and discovered records are also refreshed rather than persisted.
 
 Reset behavior: removing a folder only forgets it in the app; it never deletes the runner directory.
@@ -127,7 +135,8 @@ Reset behavior: removing a folder only forgets it in the app; it never deletes t
 ## 7. Accessibility plan
 
 - Menu-bar glyph has a state-describing `accessibilityLabel`.
-- Runner cards combine children into one labelled, selectable element and expose `.isSelected`.
+- Runner cards group a labelled selection button with a separate Start/Stop button; selection
+  exposes `.isSelected` without hiding the action from VoiceOver.
 - All stat values and log lines are `.textSelection(.enabled)` and VoiceOver-readable.
 - Every icon-only button has both `.help()` and an `accessibilityLabel`.
 - Uses system colors / SF Symbols → dark mode, increased contrast, and Dynamic-Type-ish sizing come
@@ -136,6 +145,21 @@ Reset behavior: removing a folder only forgets it in the app; it never deletes t
 ---
 
 ## 8. QA checklist
+
+### Interaction feedback
+
+System buttons, menus, sidebar selection, text fields, toggles, pickers, and disclosures keep their
+native macOS feedback. Custom cards, job rows, and compact actions use `RunnerButtonStyle`:
+semantic hover shading, a brief pressed highlight and compression, and an accent focus outline.
+Runner selection is a real button, with Start/Stop as a separate sibling button so both remain
+keyboard-accessible and one action cannot accidentally activate the other. Selection, setup steps,
+panel routes, detail tabs, inline confirmations, banners, and label edits use short local transitions.
+
+Press feedback starts immediately (80 ms) and releases in 160 ms; hover uses 120 ms, content changes
+180 ms. These animations retarget on rapid input and never delay an action. Disabled controls show
+neither hover nor press feedback. Reduce Motion removes custom scaling, transitions, and status
+pulses while retaining static hover/pressed/selected/focus cues. Increased Contrast strengthens
+hover and pressed fills. Live statistics and log streams are never animated as interaction feedback.
 
 See [README.md](README.md#manual-qa-checklist). The environment can run macOS, and the app was
 compiled and launched; runtime behavior of GitHub-mutating actions (register/unregister/update)

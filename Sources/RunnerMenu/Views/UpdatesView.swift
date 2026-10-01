@@ -10,8 +10,7 @@ struct UpdatesView: View {
 
     @State private var info: UpdateInfo?
     @State private var checking = false
-    @State private var applying = false
-    @State private var progress: Double = 0
+    private var applying: Bool { store.updatePhases[instance.id] != nil }
     @State private var allowUnverified = false
     @State private var confirmUpdate = false
 
@@ -19,6 +18,13 @@ struct UpdatesView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                if let phase = store.updatePhases[instance.id] {
+                    if let fraction = phase.downloadFraction {
+                        ProgressView(value: fraction) { Text(phase.label).font(.caption) }
+                    } else {
+                        HStack { ProgressView().controlSize(.small); Text(phase.label).font(.caption) }
+                    }
+                }
                 if checking && info == nil {
                     HStack { ProgressView().controlSize(.small); Text("Checking for updates…") }
                         .font(.callout).foregroundStyle(.secondary)
@@ -63,7 +69,7 @@ struct UpdatesView: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(RunnerButtonStyle())
             .disabled(checking || applying)
             .help("Re-check")
         }
@@ -135,8 +141,8 @@ struct UpdatesView: View {
 
     private func actions(_ info: UpdateInfo) -> some View {
         VStack(spacing: 8) {
-            if applying {
-                ProgressView(value: progress) { Text("Updating…").font(.caption) }
+            if !applying, let reason = store.updateUnavailableReason(for: instance) {
+                Text(reason).font(.caption).foregroundStyle(.secondary)
             }
             Button {
                 confirmUpdate = true
@@ -147,7 +153,7 @@ struct UpdatesView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(applying || (!info.hasVerifiableHash && !allowUnverified))
+            .disabled(store.updateUnavailableReason(for: instance) != nil || (!info.hasVerifiableHash && !allowUnverified))
         }
     }
 
@@ -161,12 +167,9 @@ struct UpdatesView: View {
 
     private func apply() async {
         guard let info else { return }
-        applying = true
-        progress = 0
-        defer { applying = false }
         let ok = await store.applyUpdate(
             instance, info: info, allowUnverified: allowUnverified,
-            progress: { frac in Task { @MainActor in progress = frac } }
+            progress: { _ in }
         )
         if ok { await check() }
     }
