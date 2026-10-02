@@ -45,18 +45,29 @@ protocol RunnerExecutionBackend: Sendable {
 /// Direct, same-user backend used until the cross-user Runner Agent is active.
 struct LocalRunnerExecutionBackend: RunnerExecutionBackend {
     private let controller: RunnerController
+    private let logInsightCache = LogTailer.InsightCache()
+    private let processScan: @Sendable () async -> ProcessScan
 
-    init(controller: RunnerController = RunnerController()) {
+    init(controller: RunnerController = RunnerController(),
+         processScan: @escaping @Sendable () async -> ProcessScan = { await ProcessMonitor.scan() }) {
         self.controller = controller
+        self.processScan = processScan
     }
 
     func observe(_ requests: [RunnerObservationRequest]) async throws -> [String: RunnerRuntimeObservation] {
-        let scan = await ProcessMonitor.scan()
+        guard !requests.isEmpty else {
+            _ = await logInsightCache.insights(for: [])
+            return [:]
+        }
+        let scan = await processScan()
+        let logInsights = await logInsightCache.insights(
+            for: requests.filter { $0.runner.isConfigured }.map { $0.runner.directory }
+        )
         var result: [String: RunnerRuntimeObservation] = [:]
 
         for request in requests {
             let runner = request.runner
-            let insights = runner.isConfigured ? LogTailer.insights(for: runner.directory) : nil
+            let insights = logInsights[runner.directory.path]
             let version = request.includeVersion ? await installedVersion(for: runner) : nil
             result[runner.id] = RunnerRuntimeObservation(
                 installedVersion: version,
@@ -78,7 +89,7 @@ struct LocalRunnerExecutionBackend: RunnerExecutionBackend {
     }
 
     func freshProcessScan() async -> ProcessScan {
-        await ProcessMonitor.scan()
+        await processScan()
     }
 
     func start(_ runner: RunnerInstance, mode: StartMode) async throws {

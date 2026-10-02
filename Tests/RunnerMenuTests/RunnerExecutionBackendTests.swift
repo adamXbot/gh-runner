@@ -9,7 +9,7 @@ struct RunnerExecutionBackendTests {
 
         try Data().write(to: directory.appendingPathComponent(".service"))
         let runner = RunnerInstance(directory: directory)
-        let backend = LocalRunnerExecutionBackend()
+        let backend = LocalRunnerExecutionBackend(processScan: { ProcessScan() })
 
         let observations = try await backend.observe([
             RunnerObservationRequest(runner: runner, includeVersion: false)
@@ -33,7 +33,7 @@ struct RunnerExecutionBackendTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: listener.path)
 
         let runner = RunnerInstance(directory: directory)
-        let backend = LocalRunnerExecutionBackend()
+        let backend = LocalRunnerExecutionBackend(processScan: { ProcessScan() })
         let withoutVersion = try await backend.observe([
             RunnerObservationRequest(runner: runner, includeVersion: false)
         ])
@@ -45,10 +45,28 @@ struct RunnerExecutionBackendTests {
         #expect(withVersion[runner.id]?.installedVersion == "2.999.0")
     }
 
+    @Test func batchedObservationRunsOneProcessScanAndEmptyRequestsRunNone() async throws {
+        let a = try temporaryRunnerDirectory()
+        let b = try temporaryRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        let calls = ScanCounter()
+        let backend = LocalRunnerExecutionBackend(processScan: { await calls.scan() })
+        #expect(try await backend.observe([]).isEmpty)
+        #expect(await calls.count == 0)
+        let runners = [RunnerInstance(directory: a), RunnerInstance(directory: b)]
+        _ = try await backend.observe(runners.map { RunnerObservationRequest(runner: $0, includeVersion: false) })
+        #expect(await calls.count == 1)
+    }
+
     private func temporaryRunnerDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("runner-backend-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
+}
+
+private actor ScanCounter {
+    var count = 0
+    func scan() -> ProcessScan { count += 1; return ProcessScan() }
 }

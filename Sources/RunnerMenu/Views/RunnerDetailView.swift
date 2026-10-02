@@ -367,10 +367,10 @@ struct RunnerDetailView: View {
     }
 
     private func revealJobLog(_ job: JobRecord) {
-        if let url = store.jobWorkerLog(job, in: instance) {
+        Task {
+            let url = await store.jobWorkerLog(job, in: instance)
+                ?? LogTailer.diagDirectory(for: instance.directory)
             NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting([LogTailer.diagDirectory(for: instance.directory)])
         }
     }
 

@@ -61,6 +61,10 @@ swift run                 # run straight from the package
 The app has **no Dock icon** — look for its glyph in the menu bar (top-right). Set
 `RUNNERMENU_DOCK=1` in the environment to force a Dock icon while debugging.
 
+The [performance audit](docs/PERFORMANCE_AUDIT.md) records CPU measurements, regression
+coverage, and remaining findings. Run `./run-performance-benchmarks.sh` for repeatable
+synthetic log and process benchmarks.
+
 > Because it's ad-hoc signed, the first launch may need a right-click → Open, and the
 > **login item** and **launchd service** features work best once the app lives in a stable location
 > (e.g. `/Applications/RunnerMenu.app`).

@@ -164,6 +164,86 @@ struct RunnerStoreUXTests {
         #expect(store.discoveryIssue == nil)
     }
 
+    @Test func simultaneousRefreshRequestsShareOneObservation() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.cleanUp() }
+        let backend = UXBackend()
+        await backend.holdObservation()
+        let store = fixture.store(backend: backend)
+        let first = Task { await store.refreshAll() }
+        await backend.waitForObservation()
+        var secondFinished = false
+        let second = Task { await store.refreshAll(); secondFinished = true }
+        await Task.yield()
+        #expect(!secondFinished)
+        #expect(await backend.observations == 1)
+        await backend.finishObservation()
+        await first.value
+        await second.value
+        await store.refreshAll()
+        #expect(await backend.observations == 2)
+    }
+
+    @Test func pollIntervalSanitizesAndPersistsInvalidInputs() throws {
+        let fixture = try StoreFixture()
+        defer { fixture.cleanUp() }
+        let store = fixture.store()
+        for (value, expected) in [(0.0, 2.0), (-10.0, 2.0), (1000.0, 30.0), (Double.nan, 5.0), (Double.infinity, 5.0), (-Double.infinity, 5.0)] {
+            store.pollInterval = value
+            #expect(store.pollInterval == expected)
+            #expect(fixture.defaults.double(forKey: "pollInterval") == expected)
+            #expect(fixture.store().pollInterval == expected)
+        }
+    }
+
+    @Test func failedVersionReadsBackOffAndSuccessfulVersionsStayCached() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.cleanUp() }
+        let backend = UXBackend()
+        await backend.reportNoVersion()
+        var time = Date(timeIntervalSince1970: 1000)
+        let store = fixture.store(backend: backend, refreshClock: { time })
+        await store.refreshAll()
+        await store.refreshAll()
+        #expect(await backend.versionRequests == [true, false])
+        time = time.addingTimeInterval(61)
+        await backend.reportVersion()
+        await store.refreshAll()
+        await store.refreshAll()
+        #expect(await backend.versionRequests == [true, false, true, false])
+        #expect(store.runners.first?.installedVersion == "3.0.0")
+    }
+
+    @Test func cancelledObservationDoesNotPublishAStaleSnapshot() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.cleanUp() }
+        let backend = UXBackend()
+        await backend.setRunning(fixture.runner)
+        await backend.holdObservation()
+        let store = fixture.store(backend: backend)
+        let refresh = Task { await store.refreshAll() }
+        await backend.waitForObservation()
+        refresh.cancel()
+        await backend.finishObservation()
+        await refresh.value
+        #expect(store.statuses.isEmpty)
+        #expect(store.lastRefresh == nil)
+        await store.refreshAll()
+        #expect(store.status(for: fixture.runner).state == .running)
+    }
+
+    @Test func pollingDoesNotRetainTheStoreAcrossSleeps() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.cleanUp() }
+        let backend = UXBackend()
+        var store: RunnerStore? = fixture.store(backend: backend, pollingEnabled: true)
+        let isStoreReleased = { [weak store] in store == nil }
+        await backend.waitForObservation()
+        store = nil
+        try await waitUntil(isStoreReleased)
+        #expect(isStoreReleased())
+    }
+
     private func waitUntil(_ predicate: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(4)
         while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
@@ -211,8 +291,10 @@ private struct StoreFixture {
         defaults.set(gh.path, forKey: "ghPath")
     }
 
-    func store(backend: any RunnerExecutionBackend = UXBackend(), updater: (any RunnerUpdating)? = nil) -> RunnerStore {
-        RunnerStore(backend: backend, defaults: defaults, updater: updater, pollingEnabled: false)
+    func store(backend: any RunnerExecutionBackend = UXBackend(), updater: (any RunnerUpdating)? = nil,
+               pollingEnabled: Bool = false, refreshClock: @escaping () -> Date = { Date() }) -> RunnerStore {
+        RunnerStore(backend: backend, defaults: defaults, updater: updater,
+                    pollingEnabled: pollingEnabled, refreshClock: refreshClock)
     }
     func cleanUp() {
         defaults.removePersistentDomain(forName: suite)
@@ -221,12 +303,25 @@ private struct StoreFixture {
 }
 
 private actor UXBackend: RunnerExecutionBackend {
-    var starts = 0, stops = 0, serviceInstalls = 0
+    var starts = 0, stops = 0, serviceInstalls = 0, observations = 0
+    private var observationGate: CheckedContinuation<Void, Never>?
+    private var holdingObservation = false
+    var versionRequests: [Bool] = []
+    private var hasVersion = true
+    func reportNoVersion() { hasVersion = false }
+    func reportVersion() { hasVersion = true }
     private var startGate: CheckedContinuation<Void, Never>?
     private var hold = false
     private var unregisterFails = false
     private var scan = ProcessScan()
 
+    func holdObservation() { holdingObservation = true }
+    func waitForObservation() async { while observations == 0 { await Task.yield() } }
+    func finishObservation() {
+        holdingObservation = false
+        observationGate?.resume()
+        observationGate = nil
+    }
     func holdStart() { hold = true }
     func waitForStart() async { while starts == 0 { await Task.yield() } }
     func finishStart() { hold = false; startGate?.resume(); startGate = nil }
@@ -236,8 +331,11 @@ private actor UXBackend: RunnerExecutionBackend {
     func setBusy(_ runner: RunnerInstance) { scan.busyDirectories.insert(ProcessMonitor.normalize(runner.directory.path)) }
     func failUnregister() { unregisterFails = true }
     func observe(_ requests: [RunnerObservationRequest]) async throws -> [String: RunnerRuntimeObservation] {
-        Dictionary(uniqueKeysWithValues: requests.map {
-            ($0.runner.id, RunnerRuntimeObservation(installedVersion: "3.0.0", process: scan.listener(for: $0.runner.directory),
+        observations += 1
+        versionRequests.append(contentsOf: requests.map(\.includeVersion))
+        if holdingObservation { await withCheckedContinuation { observationGate = $0 } }
+        return Dictionary(uniqueKeysWithValues: requests.map {
+            ($0.runner.id, RunnerRuntimeObservation(installedVersion: hasVersion && $0.includeVersion ? "3.0.0" : nil, process: scan.listener(for: $0.runner.directory),
                 busy: scan.isBusy($0.runner.directory), insights: nil, serviceInstalled: false))
         })
     }
