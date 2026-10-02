@@ -177,16 +177,16 @@ struct LogConsoleView: View {
             ? store.serviceLogDirectory(runner)?.appendingPathComponent("stdout.log")
             : nil
         while !Task.isCancelled {
-            // Read off the main actor — a whole-file read must never block the UI.
+            // Read off the main actor — file reads must never block the UI.
             let result = await Task.detached(priority: .utility) {
                 if let prefix { return LogTailer.readTail(in: dir, prefix: prefix) }
                 if let serviceLog { return LogTailer.readTail(at: serviceLog) }
                 return LogTailer.ReadResult(url: nil, lines: [], issue: nil)
             }.value
             guard !Task.isCancelled else { return }
-            currentLogURL = result.url
-            lines = result.lines
-            readIssue = result.issue
+            if currentLogURL != result.url { currentLogURL = result.url }
+            if lines != result.lines { lines = result.lines }
+            if readIssue != result.issue { readIssue = result.issue }
             loading = false
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }

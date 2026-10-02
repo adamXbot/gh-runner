@@ -104,6 +104,14 @@ enum LogTailer {
     /// unbounded diagnostic directory on every status poll.
     private static let insightLogLimit = 12
 
+    private static let workerFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+
     private static let utcFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -116,26 +124,62 @@ enum LogTailer {
         runner.appendingPathComponent("_diag")
     }
 
-    /// Newest log file with the given prefix (e.g. "Runner_", "Worker_").
-    static func newestLog(in runnerDir: URL, prefix: String) -> URL? {
-        logFiles(in: runnerDir, prefix: prefix).first
+    private struct LogSignature: Equatable, Sendable {
+        let size: UInt64
+        let modified: Date
+        let created: Date?
+        let inode: UInt64
+        let permissions: UInt16
+
+        init?(_ url: URL) {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let size = attributes[.size] as? NSNumber,
+                  let modified = attributes[.modificationDate] as? Date,
+                  let inode = attributes[.systemFileNumber] as? NSNumber,
+                  let permissions = attributes[.posixPermissions] as? NSNumber else { return nil }
+            self.size = size.uint64Value
+            self.modified = modified
+            self.created = attributes[.creationDate] as? Date
+            self.inode = inode.uint64Value
+            self.permissions = permissions.uint16Value
+        }
+
+        func canAppend(to previous: Self) -> Bool {
+            inode == previous.inode && created == previous.created
+                && permissions == previous.permissions && size > previous.size
+        }
     }
 
-    /// Matching log files, newest first. Modification time is authoritative because
-    /// the active runner log continues to change after its timestamped filename is set.
-    private static func logFiles(in runnerDir: URL, prefix: String) -> [URL] {
-        let diag = diagDirectory(for: runnerDir)
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: diag, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
-        ) else { return [] }
-        return entries
-            .filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "log" }
-            .sorted { a, b in
-                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-                if da != db { return da > db }
-                return a.lastPathComponent > b.lastPathComponent
-            }
+    private struct LogFile: Equatable, Sendable {
+        let url: URL
+        let signature: LogSignature
+    }
+
+    private static func matchingLogs(in runnerDir: URL, prefix: String) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: diagDirectory(for: runnerDir), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ).filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "log" }
+    }
+
+    private static func logFiles(in runnerDir: URL, prefix: String) throws -> [LogFile] {
+        try matchingLogs(in: runnerDir, prefix: prefix).compactMap { url in
+            LogSignature(url).map { LogFile(url: url, signature: $0) }
+        }
+    }
+
+    private static func older(_ a: LogFile, than b: LogFile) -> Bool {
+        a.signature.modified == b.signature.modified
+            ? a.url.lastPathComponent < b.url.lastPathComponent
+            : a.signature.modified < b.signature.modified
+    }
+
+    /// Select the newest log in one pass; metadata is read once per matching file.
+    static func newestLog(in runnerDir: URL, prefix: String) -> URL? {
+        newestLogFile(in: runnerDir, prefix: prefix)?.url
+    }
+
+    private static func newestLogFile(in runnerDir: URL, prefix: String) -> LogFile? {
+        (try? logFiles(in: runnerDir, prefix: prefix))?.max { older($0, than: $1) }
     }
 
     /// Read a log file, tolerating non-UTF-8 bytes (job stdout often isn't clean UTF-8).
@@ -145,11 +189,39 @@ enum LogTailer {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// Last `maxLines` lines of a file (whole-file read; runner logs are small).
+    /// Read backwards in small blocks so live views do not decode the whole log.
+    /// Preserve the existing empty final line when a file ends with a newline.
     static func tail(_ url: URL, maxLines: Int = 200) -> [String] {
-        guard let content = readLossy(url) else { return [] }
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        return Array(lines.suffix(maxLines))
+        (try? tailSnapshot(at: url, maxLines: maxLines).lines) ?? []
+    }
+
+    struct TailSnapshot: Sendable {
+        let lines: [String]
+        let bytesRead: Int
+    }
+
+    static func tailSnapshot(at url: URL, maxLines: Int) throws -> TailSnapshot {
+        guard maxLines > 0 else { return TailSnapshot(lines: [], bytesRead: 0) }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var offset = try handle.seekToEnd()
+        guard offset > 0 else { return TailSnapshot(lines: [], bytesRead: 0) }
+        var blocks: [Data] = []
+        var newlineCount = 0
+        while offset > 0, newlineCount <= maxLines {
+            let length = min(offset, 64 * 1024)
+            offset -= length
+            try handle.seek(toOffset: offset)
+            let block = try handle.read(upToCount: Int(length)) ?? Data()
+            newlineCount += block.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) }
+            blocks.append(block)
+        }
+        var data = Data()
+        for block in blocks.reversed() { data.append(block) }
+        let lines = data.split(separator: 0x0A, omittingEmptySubsequences: false).suffix(maxLines).map {
+            String(decoding: $0.last == 0x0D ? $0.dropLast() : $0[...], as: UTF8.self)
+        }
+        return TailSnapshot(lines: lines, bytesRead: data.count)
     }
 
     struct ReadResult: Equatable, Sendable {
@@ -160,15 +232,7 @@ enum LogTailer {
 
     static func readTail(in runnerDir: URL, prefix: String, maxLines: Int = 400) -> ReadResult {
         do {
-            let files = try FileManager.default.contentsOfDirectory(
-                at: diagDirectory(for: runnerDir), includingPropertiesForKeys: [.contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            ).filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "log" }
-            let newest = files.sorted {
-                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-                return a == b ? $0.lastPathComponent > $1.lastPathComponent : a > b
-            }.first
+            let newest = try logFiles(in: runnerDir, prefix: prefix).max { older($0, than: $1) }?.url
             guard let newest else { return ReadResult(url: nil, lines: [], issue: nil) }
             return readTail(at: newest, maxLines: maxLines)
         } catch {
@@ -181,9 +245,7 @@ enum LogTailer {
 
     static func readTail(at url: URL, maxLines: Int = 400) -> ReadResult {
         do {
-            let content = String(decoding: try Data(contentsOf: url), as: UTF8.self)
-            let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            return ReadResult(url: url, lines: content.isEmpty ? [] : Array(lines.suffix(maxLines)), issue: nil)
+            return ReadResult(url: url, lines: try tailSnapshot(at: url, maxLines: maxLines).lines, issue: nil)
         } catch {
             if (error as NSError).code == NSFileReadNoSuchFileError {
                 return ReadResult(url: nil, lines: [], issue: nil)
@@ -193,7 +255,12 @@ enum LogTailer {
     }
 
     private static func logReadIssue(_ error: Error) -> String {
-        if (error as NSError).code == NSFileReadNoPermissionError {
+        let fileError = error as NSError
+        let underlying = fileError.userInfo[NSUnderlyingErrorKey] as? NSError
+        let posixError = fileError.domain == NSPOSIXErrorDomain ? fileError : underlying
+        if fileError.code == NSFileReadNoPermissionError
+            || (posixError?.domain == NSPOSIXErrorDomain
+                && [Int(EACCES), Int(EPERM)].contains(posixError?.code ?? 0)) {
             return "Runner Menu cannot read this log. Check folder permissions or open it from the runner owner's macOS account."
         }
         return "Could not read the log: \(error.localizedDescription) Check the log folder in Finder."
@@ -214,23 +281,31 @@ enum LogTailer {
         return utcFormatter.date(from: stamp)
     }
 
-    /// Merge the recent Runner-log tails of several runners into one time-ordered stream,
-    /// each line tagged with its runner. Used by the dashboard's combined log view.
-    static func mergedTail(runners: [(name: String, directory: URL)],
-                           perRunner: Int = 80, limit: Int = 500) -> [MergedLogLine] {
-        var collected: [(runner: String, text: String, ts: Date?)] = []
-        for runner in runners {
-            guard let log = newestLog(in: runner.directory, prefix: "Runner_") else { continue }
-            var lastTs: Date?
-            for line in tail(log, maxLines: perRunner) where !line.isEmpty {
-                let ts = leadingTimestamp(line) ?? lastTs
-                if ts != nil { lastTs = ts }
-                collected.append((runner.name, line, ts))
+    private struct TimedLine: Sendable {
+        let text: String
+        let timestamp: Date?
+    }
+
+    private static func timedLines(_ lines: [String], timestamps: inout [String: Date]) -> [TimedLine] {
+        var previous: Date?
+        return lines.filter { !$0.isEmpty }.map { line in
+            var date: Date?
+            if line.hasPrefix("[") {
+                let stamp = String(line.dropFirst().prefix(20))
+                date = timestamps[stamp] ?? utcFormatter.date(from: stamp)
+                if let date { timestamps[stamp] = date }
             }
+            let timestamp = date ?? previous
+            if timestamp != nil { previous = timestamp }
+            return TimedLine(text: line, timestamp: timestamp)
         }
-        // Stable sort by timestamp; index tiebreak keeps same-time lines in order.
+    }
+
+    private static func merge(_ tails: [(name: String, lines: [TimedLine])], limit: Int) -> [MergedLogLine] {
+        guard limit > 0 else { return [] }
+        let collected = tails.flatMap { tail in tail.lines.map { (runner: tail.name, line: $0) } }
         let indexed = collected.enumerated().sorted { a, b in
-            switch (a.element.ts, b.element.ts) {
+            switch (a.element.line.timestamp, b.element.line.timestamp) {
             case let (x?, y?): return x == y ? a.offset < b.offset : x < y
             case (nil, .some): return true
             case (.some, nil): return false
@@ -238,71 +313,274 @@ enum LogTailer {
             }
         }
         return indexed.suffix(limit).enumerated().map { i, item in
-            MergedLogLine(id: i, runner: item.element.runner, text: item.element.text, timestamp: item.element.ts)
+            MergedLogLine(id: i, runner: item.element.runner, text: item.element.line.text,
+                          timestamp: item.element.line.timestamp)
         }
     }
 
-    /// Parse job start/completion events across recent Runner log rotations.
-    static func insights(for runnerDir: URL) -> RunnerLogInsights {
-        // Parse oldest-to-newest so completion and "Listening for Jobs" events can
-        // settle state opened in an earlier file. The result is reversed for display.
-        let logURLs = Array(logFiles(in: runnerDir, prefix: "Runner_")
-            .prefix(insightLogLimit)
-            .reversed())
-        guard !logURLs.isEmpty else {
-            return RunnerLogInsights(currentJob: nil, history: [], lastLine: nil)
+    /// One-off merge; repeated live reads use MergedTailCache instead.
+    static func mergedTail(runners: [(name: String, directory: URL)],
+                           perRunner: Int = 80, limit: Int = 500) -> [MergedLogLine] {
+        guard perRunner > 0, limit > 0 else { return [] }
+        var timestamps: [String: Date] = [:]
+        let tails = runners.compactMap { runner -> (name: String, lines: [TimedLine])? in
+            guard let log = newestLog(in: runner.directory, prefix: "Runner_") else { return nil }
+            return (runner.name, timedLines(tail(log, maxLines: perRunner), timestamps: &timestamps))
+        }
+        return merge(tails, limit: limit)
+    }
+
+    actor MergedTailCache {
+        private struct Source: Equatable {
+            let name: String
+            let directory: URL
+            let file: LogFile?
+        }
+        private struct CachedTail {
+            let file: LogFile
+            let limit: Int
+            let lines: [TimedLine]
+        }
+        private var tails: [URL: CachedTail] = [:]
+        private var previousSources: [Source] = []
+        private var previousLimits: (perRunner: Int, total: Int)?
+        private var previousResult: [MergedLogLine] = []
+        private let readTail: @Sendable (URL, Int) throws -> [String]
+
+        init(readTail: @escaping @Sendable (URL, Int) throws -> [String] = { try LogTailer.tailSnapshot(at: $0, maxLines: $1).lines }) {
+            self.readTail = readTail
         }
 
+        func mergedTail(runners: [(name: String, directory: URL)],
+                        perRunner: Int = 80, limit: Int = 500) -> [MergedLogLine] {
+            guard perRunner > 0, limit > 0, !Task.isCancelled else { return [] }
+            let sources = runners.map { Source(name: $0.name, directory: $0.directory,
+                                               file: newestLogFile(in: $0.directory, prefix: "Runner_")) }
+            if previousSources == sources, previousLimits?.perRunner == perRunner, previousLimits?.total == limit {
+                return previousResult
+            }
+            var collected: [(name: String, lines: [TimedLine])] = []
+            var timestamps: [String: Date] = [:]
+            var cacheable = true
+            for source in sources {
+                guard let file = source.file else { continue }
+                let lines: [TimedLine]
+                if let cached = tails[file.url], cached.file == file, cached.limit == perRunner {
+                    lines = cached.lines
+                } else {
+                    do {
+                        lines = timedLines(try readTail(file.url, perRunner), timestamps: &timestamps)
+                        tails[file.url] = CachedTail(file: file, limit: perRunner, lines: lines)
+                    } catch {
+                        tails[file.url] = nil
+                        cacheable = false
+                        continue
+                    }
+                }
+                collected.append((source.name, lines))
+            }
+            let retained = Set(sources.compactMap { $0.file?.url })
+            tails = tails.filter { retained.contains($0.key) }
+            previousResult = merge(collected, limit: limit)
+            previousSources = cacheable ? sources : []
+            previousLimits = cacheable ? (perRunner, limit) : nil
+            return previousResult
+        }
+    }
+
+    /// Read just the requested bytes, keeping a growing listener log off the hot path.
+    static func readLogRange(_ url: URL, offset: UInt64, count: Int) -> Data? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: offset)
+            return try handle.read(upToCount: count)
+        } catch { return nil }
+    }
+
+    /// Per-backend cache, isolated from the UI. Unchanged snapshots reuse their result;
+    /// append-only logs parse new bytes, retaining incomplete lines until they finish.
+    actor InsightCache {
+        private struct CachedLog {
+            var signature: LogSignature
+            var events: [LogEvent] = []
+            var pendingLine = Data()
+            var lineNumber = 0
+            var head = Data()
+            var anchor = Data()
+        }
+
+        private struct CachedRunner {
+            let files: [LogFile]
+            let insights: RunnerLogInsights
+        }
+
+        private var logs: [URL: CachedLog] = [:]
+        private var runners: [String: CachedRunner] = [:]
+        private let readFile: @Sendable (URL, UInt64, Int) -> Data?
+
+        init(readFile: @escaping @Sendable (URL, UInt64, Int) -> Data? = { LogTailer.readLogRange($0, offset: $1, count: $2) }) {
+            self.readFile = readFile
+        }
+
+        func insights(for directories: [URL]) -> [String: RunnerLogInsights] {
+            var result: [String: RunnerLogInsights] = [:]
+            var retained: Set<URL> = []
+            for directory in directories {
+                guard !Task.isCancelled else { break }
+                let files = insightLogs(in: directory)
+                retained.formUnion(files.map(\.url))
+                if let cached = runners[directory.path], cached.files == files {
+                    result[directory.path] = cached.insights
+                    continue
+                }
+                var events: [LogEvent] = []
+                var cacheable = true
+                for file in files {
+                    let cached = logs[file.url]
+                    let parsed: CachedLog?
+                    if cached?.signature == file.signature {
+                        parsed = cached
+                    } else {
+                        parsed = read(file, previous: cached)
+                    }
+                    logs[file.url] = parsed
+                    if let parsed {
+                        events.append(contentsOf: parsed.events)
+                        events.append(contentsOf: logEvents(in: String(decoding: parsed.pendingLine, as: UTF8.self),
+                                                           filename: file.url.lastPathComponent, firstLine: parsed.lineNumber))
+                    } else {
+                        cacheable = false
+                    }
+                }
+                let insights = LogTailer.insights(from: events)
+                result[directory.path] = insights
+                runners[directory.path] = cacheable ? CachedRunner(files: files, insights: insights) : nil
+            }
+            logs = logs.filter { retained.contains($0.key) }
+            let paths = Set(directories.map(\.path))
+            runners = runners.filter { paths.contains($0.key) }
+            return result
+        }
+
+        private func read(_ file: LogFile, previous: CachedLog?) -> CachedLog? {
+            var parsed = CachedLog(signature: file.signature)
+            var offset: UInt64 = 0
+            if let previous, file.signature.canAppend(to: previous.signature) {
+                let anchorOffset = previous.signature.size - UInt64(previous.anchor.count)
+                guard let anchor = readFile(file.url, anchorOffset, previous.anchor.count) else { return nil }
+                let head = anchorOffset == 0 ? Data(anchor.prefix(previous.head.count))
+                    : readFile(file.url, 0, previous.head.count)
+                if anchor == previous.anchor, head == previous.head {
+                    parsed = previous
+                    parsed.signature = file.signature
+                    offset = previous.signature.size
+                }
+                // A changed checkpoint means rewrite or truncation followed by regrowth.
+                // Replay instead of mixing old job events with new file contents.
+            }
+            while offset < file.signature.size {
+                guard !Task.isCancelled else { return nil }
+                let length = Int(min(256 * 1024, file.signature.size - offset))
+                guard let data = readFile(file.url, offset, length), data.count == length else { return nil }
+                if parsed.head.count < 256 {
+                    parsed.head.append(data.prefix(256 - parsed.head.count))
+                }
+                parsed.anchor = Data((parsed.anchor + data).suffix(256))
+                parsed.pendingLine.append(data)
+                if let newline = parsed.pendingLine.lastIndex(of: 0x0A) {
+                    let complete = parsed.pendingLine[...newline]
+                    let text = String(decoding: complete, as: UTF8.self)
+                    let events = parsedEvents(in: text, filename: file.url.lastPathComponent,
+                                              firstLine: parsed.lineNumber)
+                    parsed.events.append(contentsOf: events.events)
+                    parsed.lineNumber = events.nextLine
+                    parsed.pendingLine = Data(parsed.pendingLine.suffix(from: newline + 1))
+                }
+                offset += UInt64(length)
+            }
+            guard let current = LogSignature(file.url), current.inode == file.signature.inode,
+                  current.created == file.signature.created, current.permissions == file.signature.permissions,
+                  current.size >= file.signature.size,
+                  current.size > file.signature.size || current.modified == file.signature.modified else { return nil }
+            return parsed
+        }
+    }
+
+    private struct LogEvent: Sendable {
+        let id: String
+        let message: String
+        let timeString: String
+        let date: Date?
+    }
+
+    private static func insightLogs(in runnerDir: URL) -> [LogFile] {
+        let files = (try? logFiles(in: runnerDir, prefix: "Runner_")) ?? []
+        return Array(files.sorted { older($1, than: $0) }.prefix(insightLogLimit).reversed())
+    }
+
+    /// Uncached entry point for one-off reads and comparison with cached polling.
+    static func insights(for runnerDir: URL) -> RunnerLogInsights {
+        let events = insightLogs(in: runnerDir).flatMap { file in
+            readLossy(file.url).map { logEvents(in: $0, filename: file.url.lastPathComponent) } ?? []
+        }
+        return insights(from: events)
+    }
+
+    private static func logEvents(in content: String, filename: String, firstLine: Int = 0) -> [LogEvent] {
+        parsedEvents(in: content, filename: filename, firstLine: firstLine).events
+    }
+
+    private static func parsedEvents(in content: String, filename: String,
+                                     firstLine: Int) -> (events: [LogEvent], nextLine: Int) {
+        let normalized = content.utf8.contains(0x0D)
+            ? content.replacingOccurrences(of: "\r\n", with: "\n") : content
+        let lines = normalized.split(separator: "\n")
+        let events = lines.enumerated().compactMap { lineNumber, rawLine -> LogEvent? in
+            guard let range = rawLine.range(of: "WRITE LINE: ", options: .literal) else { return nil }
+            let payload = rawLine[range.upperBound...]
+            guard let separator = payload.range(of: ": ", options: .literal) else { return nil }
+            let timeString = String(payload[..<separator.lowerBound])
+            let message = String(payload[separator.upperBound...])
+            let isJobEvent = message.hasPrefix("Running job: ") || message.hasPrefix("Job ")
+            return LogEvent(id: "\(filename):\(firstLine + lineNumber)", message: message,
+                            timeString: timeString, date: isJobEvent ? utcFormatter.date(from: timeString) : nil)
+        }
+        return (events, firstLine + lines.count)
+    }
+
+    private static func insights(from events: [LogEvent]) -> RunnerLogInsights {
         var history: [JobRecord] = []
         var openJob: String?
         var lastMeaningfulLine: String?
-
-        for logURL in logURLs {
-            guard let content = readLossy(logURL) else { continue }
-            for (lineNumber, rawLine) in content.split(separator: "\n").enumerated() {
-                guard let range = rawLine.range(of: "WRITE LINE: ") else { continue }
-                let payload = String(rawLine[range.upperBound...])
-                // payload == "<timestamp>Z: <message>"
-                guard let sepRange = payload.range(of: ": ") else { continue }
-                let timeString = String(payload[payload.startIndex..<sepRange.lowerBound])
-                let message = String(payload[sepRange.upperBound...])
-                lastMeaningfulLine = message
-                let date = utcFormatter.date(from: timeString)
-                let recordID = "\(logURL.lastPathComponent):\(lineNumber)"
-
-                if let name = value(after: "Running job: ", in: message) {
-                    openJob = name
-                    history.append(JobRecord(id: recordID, name: name, result: .running,
-                                             timestamp: date, rawTime: timeString,
-                                             startTimestamp: date))
-                } else if message.hasPrefix("Job "), let resultRange = message.range(of: " completed with result: ") {
-                    let name = String(message[message.index(message.startIndex, offsetBy: 4)..<resultRange.lowerBound])
-                    let resultText = String(message[resultRange.upperBound...])
-                    // Close out the matching open record if present.
-                    if let idx = history.lastIndex(where: { $0.name == name && $0.result == .running }) {
-                        history[idx].result = JobRecord.JobResult(resultText)
-                        // Compute duration from the recorded start BEFORE overwriting it.
-                        if let start = history[idx].timestamp, let end = date {
-                            history[idx].duration = end.timeIntervalSince(start)
-                        }
-                        history[idx].timestamp = date ?? history[idx].timestamp
-                    } else {
-                        history.append(JobRecord(id: recordID, name: name,
-                                                 result: JobRecord.JobResult(resultText),
-                                                 timestamp: date, rawTime: timeString))
+        for event in events {
+            let message = event.message
+            lastMeaningfulLine = message
+            if let name = value(after: "Running job: ", in: message) {
+                openJob = name
+                history.append(JobRecord(id: event.id, name: name, result: .running,
+                                         timestamp: event.date, rawTime: event.timeString,
+                                         startTimestamp: event.date))
+            } else if message.hasPrefix("Job "),
+                      let range = message.range(of: " completed with result: ", options: .literal) {
+                let name = String(message[message.index(message.startIndex, offsetBy: 4)..<range.lowerBound])
+                let resultText = String(message[range.upperBound...])
+                if let index = history.lastIndex(where: { $0.name == name && $0.result == .running }) {
+                    history[index].result = JobRecord.JobResult(resultText)
+                    if let start = history[index].timestamp, let end = event.date {
+                        history[index].duration = end.timeIntervalSince(start)
                     }
-                    if openJob == name { openJob = nil }
-                } else if message.contains("Listening for Jobs") {
-                    openJob = nil
+                    history[index].timestamp = event.date ?? history[index].timestamp
+                } else {
+                    history.append(JobRecord(id: event.id, name: name, result: JobRecord.JobResult(resultText),
+                                             timestamp: event.date, rawTime: event.timeString))
                 }
+                if openJob == name { openJob = nil }
+            } else if message.contains("Listening for Jobs") {
+                openJob = nil
             }
         }
-
-        return RunnerLogInsights(
-            currentJob: openJob,
-            history: history.reversed(),
-            lastLine: lastMeaningfulLine
-        )
+        return RunnerLogInsights(currentJob: openJob, history: history.reversed(), lastLine: lastMeaningfulLine)
     }
 
     private static func value(after prefix: String, in message: String) -> String? {
@@ -317,7 +595,7 @@ enum LogTailer {
     static func workerLog(for job: JobRecord, in runnerDir: URL) -> URL? {
         guard let start = job.startTimestamp ?? job.timestamp else { return nil }
         var best: (url: URL, delta: TimeInterval)?
-        for url in logFiles(in: runnerDir, prefix: "Worker_") {
+        for url in (try? matchingLogs(in: runnerDir, prefix: "Worker_")) ?? [] {
             guard let ts = workerFileTimestamp(url) else { continue }
             let delta = abs(ts.timeIntervalSince(start))
             if best == nil || delta < best!.delta { best = (url, delta) }
@@ -334,11 +612,7 @@ enum LogTailer {
         let parts = name.split(separator: "_")
         guard parts.count >= 2 else { return nil }
         let stamp = parts[1].replacingOccurrences(of: "-utc", with: "") // 20260713-061804
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyyMMdd-HHmmss"
-        return f.date(from: stamp)
+        return workerFormatter.date(from: stamp)
     }
 
     /// Extract the repository and GitHub Actions `run_id` from a Worker log's

@@ -1,0 +1,144 @@
+{
+  "audit_date_utc": "2026-10-02",
+  "limitations": [
+    "Single Mac; short intervals with variable background load",
+    "CPU measures app only, excluding children and compositor",
+    "Window requested; expanded cards and all tabs not profiled",
+    "Closed-menu sampled resident memory increased",
+    "Original saved app and updated checkout have different base commits",
+    "Animation stack-sampling attempt timed out"
+  ],
+  "native_app": {
+    "cases": {
+      "after_menu_closed": {
+        "configured_runners": 8,
+        "cpu_percent": 0.6,
+        "cpu_seconds": 0.18,
+        "main_window_requested": false,
+        "max_sampled_rss_mb": 56.75,
+        "measurement_seconds": 30.02,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 8
+      },
+      "after_window": {
+        "configured_runners": 8,
+        "cpu_percent": 1.132,
+        "cpu_seconds": 0.34,
+        "main_window_requested": true,
+        "max_sampled_rss_mb": 77.31,
+        "measurement_seconds": 30.04,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 8
+      },
+      "before_menu_closed": {
+        "configured_runners": 8,
+        "cpu_percent": 22.017,
+        "cpu_seconds": 6.61,
+        "main_window_requested": false,
+        "max_sampled_rss_mb": 39.61,
+        "measurement_seconds": 30.02,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 8
+      },
+      "before_window": {
+        "configured_runners": 8,
+        "cpu_percent": 47.714,
+        "cpu_seconds": 14.32,
+        "main_window_requested": true,
+        "max_sampled_rss_mb": 83.78,
+        "measurement_seconds": 30.01,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 13
+      }
+    },
+    "process_scan_validation": {
+      "busy_runners_found": 1,
+      "configured_runners": 8,
+      "listeners_found": 8
+    },
+    "schema_version": 1,
+    "scope": "Synthetic eight-runner fixtures; no GitHub requests or real runner control",
+    "system": {
+      "architecture": "arm64",
+      "macos": "27.0"
+    }
+  },
+  "schema_version": 1,
+  "service_benchmarks": {
+    "appended_insights": {
+      "appended_bytes": 62,
+      "bytes_read": 574,
+      "median_ms": 8.485417
+    },
+    "cached_matches_uncached": true,
+    "cold_insights": {
+      "bytes_read": 33558720,
+      "median_ms": 1818.431584
+    },
+    "merged_8_runners_cached": {
+      "median_ms": 10.277083
+    },
+    "merged_8_runners_uncached": {
+      "median_ms": 19.137083
+    },
+    "process_10001_rows": {
+      "median_ms": 19.711625
+    },
+    "schema_version": 1,
+    "tail_400_lines": {
+      "bytes_read": 65536,
+      "median_ms": 2.028959
+    },
+    "unchanged_insights": {
+      "bytes_read": 0,
+      "median_ms": 6.675542,
+      "samples_ms": [
+        6.539458,
+        5.123083,
+        7.467,
+        6.593834,
+        8.792125,
+        6.817666,
+        6.772166,
+        5.0495,
+        6.675542
+      ]
+    },
+    "worker_lookup_1000_logs": {
+      "median_ms": 306.890459
+    },
+    "workload": {
+      "log_bytes": 33558720,
+      "process_rows": 10001,
+      "rotations_per_runner": 4,
+      "runners": 8,
+      "worker_logs": 1000
+    }
+  },
+  "source": {
+    "baseline_app_commit": "22fd1991",
+    "sha256": {
+      "Sources/RunnerMenu/Services/LogTailer.swift": "b816717987dae2771b0658047818ac79c641e607c2975f1cfffadcaf03113bbc",
+      "Sources/RunnerMenu/Services/ProcessMonitor.swift": "99e06705555007db0de1a6efef60f7135be2f9de15b19c758d6415863aaf1b31",
+      "Sources/RunnerMenu/Services/RunnerDiscovery.swift": "58265be9f90db9c90c5b4894abdbd081500b438c3853511501e9db1f79f020d8",
+      "Sources/RunnerMenu/Services/RunnerExecutionBackend.swift": "f0d4e5f6e18dad85cac24b126dae31be3ddf2f11d722d8171a0444181c0da74b",
+      "Sources/RunnerMenu/Services/RunnerStore.swift": "84ab1ac5b01e82fea2dcfe5e6d11fe30e16e028ced05f56e336a62c39ea1b681",
+      "Sources/RunnerMenu/Views/DashboardView.swift": "c0cc98cd15cb2f258d60693db618d60ef891d631b7511548477d79fe7d6b2de9",
+      "Sources/RunnerMenu/Views/LogConsoleView.swift": "ed4ed3a789ac49e7b13e54c2ec0b4bc2afbdd0ae3e6cafdd08cd7ef65aaa1f4d",
+      "Sources/RunnerMenu/Views/RunnerDetailView.swift": "e28257a1c034611950b65436eb914486144c67d19c66ebfc42c1e115eeefe646",
+      "Sources/RunnerMenu/Views/RunnerRowView.swift": "e041383e79e301ae7a9406d598c442d27231faab88432d035354c61d25c828f7",
+      "Sources/RunnerMenu/Views/RunnerWindowView.swift": "68314e9df10ce6df5c3ef6bf7458a43faf19ddce7cf981426b21a923311fb220"
+    },
+    "updated_checkout_base": "ceac9087",
+    "updated_tree": "local uncommitted changes"
+  },
+  "verification": {
+    "ad_hoc_bundle_signature": "verified",
+    "native_fixture_startup": "all eight directories in each case",
+    "real_folder_after_cpu": "unverified: rebuilt app awaited macOS Documents permission",
+    "release_app_and_agent_build": "passed",
+    "test_suites": 15,
+    "unit_status": "passed",
+    "unit_tests": 93
+  }
+}

@@ -66,6 +66,23 @@ struct RunnerDiscoveryTests {
         #expect(discovered.map(\.id) == [explicit.standardizedFileURL.path])
     }
 
+    @Test func discoveryReadsConfigurationOnlyAfterRecognizingARunner() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<100 {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("ordinary-\(index)"), withIntermediateDirectories: true)
+        }
+        let runner = root.appendingPathComponent("actual-runner")
+        try makeRunner(at: runner)
+        var configurationReads: [URL] = []
+        let result = RunnerDiscovery.discover(in: [root], loadConfiguration: { directory in
+            configurationReads.append(directory)
+            return nil
+        })
+        #expect(result.count == 1)
+        #expect(configurationReads == [runner.standardizedFileURL])
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("runner-discovery-tests-\(UUID().uuidString)", isDirectory: true)

@@ -31,7 +31,8 @@ enum RunnerDiscovery {
     static func discover(
         in roots: [URL],
         explicitDirectories: [URL] = [],
-        maximumDepth: Int = 5
+        maximumDepth: Int = 5,
+        loadConfiguration: (URL) -> RunnerConfig? = { RunnerConfig.load(from: $0) }
     ) -> [RunnerInstance] {
         let fileManager = FileManager.default
         var found: [String: RunnerInstance] = [:]
@@ -39,12 +40,9 @@ enum RunnerDiscovery {
         @discardableResult
         func addIfRunner(_ candidate: URL) -> Bool {
             let directory = candidate.standardizedFileURL
-            let instance = RunnerInstance(
-                directory: directory,
-                config: RunnerConfig.load(from: directory)
-            )
-            guard instance.looksLikeRunnerDirectory else { return false }
-            found[instance.id] = instance
+            let candidate = RunnerInstance(directory: directory)
+            guard candidate.looksLikeRunnerDirectory else { return false }
+            found[candidate.id] = RunnerInstance(directory: directory, config: loadConfiguration(directory))
             return true
         }
 

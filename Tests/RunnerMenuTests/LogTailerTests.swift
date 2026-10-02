@@ -214,6 +214,123 @@ struct LogTailerTests {
         #expect(lines.contains { $0.contains("there") })
     }
 
+    @Test func cachedInsightsReuseUnchangedFilesAndRefreshOnlyChangedRotations() async throws {
+        let runner = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: runner) }
+        let diag = LogTailer.diagDirectory(for: runner)
+        let first = diag.appendingPathComponent("Runner_1.log")
+        let second = diag.appendingPathComponent("Runner_2.log")
+        try "WRITE LINE: 2026-07-13 00:00:00Z: Running job: Build\n".write(to: first, atomically: true, encoding: .utf8)
+        try "ordinary diagnostic output\n".write(to: second, atomically: true, encoding: .utf8)
+        try setModificationDate(100, for: first)
+        try setModificationDate(200, for: second)
+        let reads = LogReadCounter()
+        let cache = LogTailer.InsightCache { url, offset, count in
+            reads.record()
+            return LogTailer.readLogRange(url, offset: offset, count: count)
+        }
+        let initial = await cache.insights(for: [runner])
+        let unchanged = await cache.insights(for: [runner])
+        #expect(initial == unchanged)
+        #expect(reads.count == 2)
+        #expect(initial[runner.path] == LogTailer.insights(for: runner))
+
+        let handle = try FileHandle(forWritingTo: second)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("WRITE LINE: 2026-07-13 00:01:24Z: Job Build completed with result: Succeeded\n".utf8))
+        try handle.close()
+        let updated = await cache.insights(for: [runner])
+        #expect(reads.count == 4)
+        #expect(updated[runner.path] == LogTailer.insights(for: runner))
+        #expect(updated[runner.path]?.history.first?.duration == 84)
+        #expect(updated[runner.path]?.currentJob == nil)
+    }
+
+    @Test func cachedInsightsFollowTruncationReplacementRotationAndDeletion() async throws {
+        let runner = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: runner) }
+        let diag = LogTailer.diagDirectory(for: runner)
+        let log = diag.appendingPathComponent("Runner_1.log")
+        let cache = LogTailer.InsightCache()
+        try "WRITE LINE: 2026-07-13 00:00:00Z: Running job: Build\n".write(to: log, atomically: true, encoding: .utf8)
+        let started = await cache.insights(for: [runner])
+        #expect(started[runner.path]?.currentJob == "Build")
+
+        // In-place truncation must discard the old job state.
+        try Data().write(to: log)
+        let truncated = await cache.insights(for: [runner])
+        #expect(truncated[runner.path]?.history.isEmpty == true)
+        // Atomic replacement is detected even when size and modification time match.
+        let oldText = "WRITE LINE: 2026-07-13 00:00:00Z: Running job: Build\n"
+        try oldText.write(to: log, atomically: true, encoding: .utf8)
+        try setModificationDate(100, for: log)
+        _ = await cache.insights(for: [runner])
+        try oldText.replacingOccurrences(of: "Build", with: "Tests").write(to: log, atomically: true, encoding: .utf8)
+        try setModificationDate(100, for: log)
+        let replaced = await cache.insights(for: [runner])
+        #expect(replaced[runner.path]?.currentJob == "Tests")
+
+        let next = diag.appendingPathComponent("Runner_2.log")
+        try "WRITE LINE: 2026-07-13 00:01:00Z: Job Tests completed with result: Succeeded\n".write(to: next, atomically: true, encoding: .utf8)
+        let rotated = await cache.insights(for: [runner])
+        #expect(rotated[runner.path] == LogTailer.insights(for: runner))
+        #expect(rotated[runner.path]?.history.first?.result == .succeeded)
+        try FileManager.default.removeItem(at: log)
+        try FileManager.default.removeItem(at: next)
+        let deleted = await cache.insights(for: [runner])
+        #expect(deleted[runner.path]?.history.isEmpty == true)
+        #expect(deleted[runner.path]?.currentJob == nil)
+    }
+
+    @Test func cachedInsightsRetryReadFailuresAndForgetRemovedRunners() async throws {
+        let runner = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: runner) }
+        let log = LogTailer.diagDirectory(for: runner).appendingPathComponent("Runner_1.log")
+        try "WRITE LINE: 2026-07-13 00:00:00Z: Running job: Build\n".write(to: log, atomically: true, encoding: .utf8)
+        let reads = LogReadCounter()
+        let cache = LogTailer.InsightCache { url, offset, count in
+            reads.record()
+            return reads.count == 1 ? nil : LogTailer.readLogRange(url, offset: offset, count: count)
+        }
+        let failed = await cache.insights(for: [runner])
+        #expect(failed[runner.path]?.history.isEmpty == true)
+        let recovered = await cache.insights(for: [runner])
+        #expect(recovered[runner.path]?.currentJob == "Build")
+        #expect(reads.count == 2)
+        _ = await cache.insights(for: [])
+        _ = await cache.insights(for: [runner])
+        #expect(reads.count == 3)
+    }
+
+    @Test func boundedTailMatchesWholeFileTailAcrossBlockBoundaries() throws {
+        let runner = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: runner) }
+        let log = LogTailer.diagDirectory(for: runner).appendingPathComponent("Runner_1.log")
+        for finalNewline in [false, true] {
+            let content = (0..<10_000).map { "\($0): résumé 🛠 " + String(repeating: "x", count: 20) }
+                .joined(separator: "\n") + (finalNewline ? "\n" : "")
+            try content.write(to: log, atomically: true, encoding: .utf8)
+            for limit in [1, 80, 400, 4000, 20_000] {
+                let expected = content.split(separator: "\n", omittingEmptySubsequences: false).suffix(limit).map(String.init)
+                #expect(LogTailer.tail(log, maxLines: limit) == expected)
+                #expect(LogTailer.readTail(at: log, maxLines: limit).lines == expected)
+            }
+        }
+        #expect(LogTailer.tail(log, maxLines: 0).isEmpty)
+        #expect(LogTailer.tail(log, maxLines: -1).isEmpty)
+    }
+
+    @Test func boundedTailPreservesBlankLinesAndVeryLongLines() throws {
+        let runner = try makeRunnerDirectory()
+        defer { try? FileManager.default.removeItem(at: runner) }
+        let log = LogTailer.diagDirectory(for: runner).appendingPathComponent("Runner_1.log")
+        let longLine = String(repeating: "é", count: 100_000)
+        try ("older\n\n" + longLine + "\nlast\n").write(to: log, atomically: true, encoding: .utf8)
+        #expect(LogTailer.tail(log, maxLines: 4) == ["", longLine, "last", ""])
+        try Data().write(to: log)
+        #expect(LogTailer.tail(log).isEmpty)
+    }
+
     private func makeRunnerDirectory() throws -> URL {
         let runner = FileManager.default.temporaryDirectory
             .appendingPathComponent("RunnerMenuTests-\(UUID().uuidString)", isDirectory: true)
@@ -229,5 +346,22 @@ struct LogTailerTests {
             [.modificationDate: Date(timeIntervalSince1970: interval)],
             ofItemAtPath: url.path
         )
+    }
+}
+
+private final class LogReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func record() {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }

@@ -45,24 +45,28 @@ enum ProcessMonitor {
     }
 
     static func scan() async -> ProcessScan {
-        var scan = ProcessScan()
         guard let result = try? await Shell.run(
-            "ps", ["-axww", "-o", "pid=,pcpu=,rss=,etime=,command="]
+            "ps", ["-axww", "-o", "pid=,pcpu=,rss=,etime=,comm="]
         ), result.succeeded else {
-            return scan
+            return ProcessScan()
         }
+        return parseSnapshot(result.stdout)
+    }
 
-        for rawLine in result.stdout.split(separator: "\n") {
+    /// Parse executable paths, without copying unrelated processes' argument lists.
+    static func parseSnapshot(_ output: String) -> ProcessScan {
+        var scan = ProcessScan()
+        for rawLine in output.split(separator: "\n") {
+            guard rawLine.hasSuffix(listenerMarker) || rawLine.hasSuffix(workerMarker) else { continue }
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }
 
             // Split into 4 leading fields (pid, cpu, rss, etime) + the command remainder.
             let fields = splitLeadingFields(line, count: 4)
-            guard fields.leading.count == 4 else { continue }
+            guard fields.leading.count == 4, let pid = Int32(fields.leading[0]), pid > 0 else { continue }
             let command = fields.remainder
 
             if let dir = directory(from: command, marker: listenerMarker) {
-                guard let pid = Int32(fields.leading[0]) else { continue }
                 let cpu = Double(fields.leading[1]) ?? 0
                 let rssKB = Double(fields.leading[2]) ?? 0
                 let info = ProcInfo(pid: pid, cpuPercent: cpu, memoryMB: rssKB / 1024.0, etime: fields.leading[3])
@@ -74,10 +78,10 @@ enum ProcessMonitor {
         return scan
     }
 
-    /// Extract the runner directory from a command path containing `marker`.
-    /// e.g. "/Users/x/actions-runner/bin/Runner.Listener run" -> "/Users/x/actions-runner".
+    /// `ps comm` provides the executable path, rather than its arguments.
     private static func directory(from command: String, marker: String) -> String? {
-        guard let range = command.range(of: marker) else { return nil }
+        guard command.hasPrefix("/"), command.hasSuffix(marker),
+              let range = command.range(of: marker, options: [.literal, .backwards]) else { return nil }
         let dir = String(command[command.startIndex..<range.lowerBound])
         return dir.isEmpty ? nil : dir
     }
@@ -89,14 +93,14 @@ enum ProcessMonitor {
         let end = line.endIndex
 
         func skipSpaces() {
-            while idx < end, line[idx] == " " { idx = line.index(after: idx) }
+            while idx < end, line[idx].isWhitespace { idx = line.index(after: idx) }
         }
 
         for _ in 0..<count {
             skipSpaces()
             guard idx < end else { break }
             let start = idx
-            while idx < end, line[idx] != " " { idx = line.index(after: idx) }
+            while idx < end, !line[idx].isWhitespace { idx = line.index(after: idx) }
             leading.append(String(line[start..<idx]))
         }
         skipSpaces()

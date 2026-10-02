@@ -153,7 +153,7 @@ private struct RunnerSidebarRow: View {
         HStack(spacing: 8) {
             Image(systemName: status.symbolName)
                 .foregroundStyle(status.tintColor)
-                .symbolEffect(.pulse, isActive: status.busy && !reduceMotion)
+                .symbolEffect(.pulse, options: .nonRepeating, isActive: status.busy && !reduceMotion)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(instance.displayName).lineLimit(1)

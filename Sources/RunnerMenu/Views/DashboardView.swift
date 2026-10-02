@@ -6,6 +6,7 @@ struct DashboardView: View {
     @Environment(RunnerStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var mergedLines: [LogTailer.MergedLogLine] = []
+    @State private var logCache = LogTailer.MergedTailCache()
     /// Live mode streams new log lines and auto-scrolls; pausing freezes the view.
     @State private var live = true
 
@@ -151,7 +152,7 @@ struct DashboardView: View {
             Image(systemName: "circle.fill")
                 .font(.system(size: 6))
                 .foregroundStyle(live ? .green : .secondary)
-                .symbolEffect(.pulse, isActive: live && !reduceMotion)
+                .symbolEffect(.pulse, options: .nonRepeating, isActive: live && !reduceMotion)
             Text(live ? "LIVE" : "PAUSED")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(live ? .green : .secondary)
@@ -181,21 +182,17 @@ struct DashboardView: View {
     }
 
     private func tailLoop() async {
+        // The task identity changes on resume, so paused views need no wake-ups.
+        guard live else { return }
         let runners = store.runners
             .filter { $0.isConfigured }
             .map { (name: $0.displayName, directory: $0.directory) }
         while !Task.isCancelled {
-            // In live mode, stream updates (1s). When paused, keep the frozen snapshot
-            // but keep looping so resuming takes effect promptly.
-            if live {
-                let lines = await Task.detached(priority: .utility) {
-                    LogTailer.mergedTail(runners: runners, perRunner: 80, limit: 500)
-                }.value
-                mergedLines = lines
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            } else {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
+            let lines = await logCache.mergedTail(runners: runners, perRunner: 80, limit: 500)
+            guard !Task.isCancelled else { return }
+            if mergedLines != lines { mergedLines = lines }
+            do { try await Task.sleep(for: .seconds(1)) }
+            catch { return }
         }
     }
 }

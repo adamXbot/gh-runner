@@ -59,7 +59,8 @@ struct RunnerRowView: View {
             Image(systemName: status.symbolName)
                 .font(.title3)
                 .foregroundStyle(status.tintColor)
-                .symbolEffect(.pulse, isActive: status.busy && !reduceMotion)
+                // A busy transition needs one pulse; repeating it keeps redrawing the window.
+                .symbolEffect(.pulse, options: .nonRepeating, isActive: status.busy && !reduceMotion)
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 2) {

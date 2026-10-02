@@ -173,6 +173,7 @@ final class RunnerStore {
 
     // MARK: - Settings (persisted in UserDefaults)
     private let defaults: UserDefaults
+    private let refreshClock: () -> Date
     private enum Keys {
         static let cleanupNotices = "registrationCleanupNotices"
         static let dirs = "runnerDirectories"
@@ -214,6 +215,11 @@ final class RunnerStore {
     }
     var pollInterval: Double = 5 {
         didSet {
+            let normalized = Self.normalizedPollInterval(pollInterval)
+            if pollInterval != normalized {
+                pollInterval = normalized
+                return
+            }
             guard isReady else { return }
             defaults.set(pollInterval, forKey: Keys.poll)
             if pollTask != nil { startPolling() }
@@ -239,6 +245,9 @@ final class RunnerStore {
     private let backend: any RunnerExecutionBackend
     private let runnerAgentClient = RunnerAgentClient()
 
+    @ObservationIgnored private var isRefreshing = false
+    @ObservationIgnored private var refreshWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var versionAttempts: [String: Date] = [:]
     private var pollTask: Task<Void, Never>?
     private var lastAuthCheck: Date?
     private var repoLoadGeneration = 0
@@ -252,14 +261,19 @@ final class RunnerStore {
 
     init(backend: any RunnerExecutionBackend = LocalRunnerExecutionBackend(),
          defaults: UserDefaults = .standard, updater: (any RunnerUpdating)? = nil,
-         pollingEnabled: Bool = true) {
+         pollingEnabled: Bool = true, refreshClock: @escaping () -> Date = { Date() }) {
         self.backend = backend
         self.defaults = defaults
+        self.refreshClock = refreshClock
         self.injectedUpdater = updater
         loadSettings()
         rebuildRunners()
         isReady = true
         if pollingEnabled { startPolling() }
+    }
+
+    static func normalizedPollInterval(_ value: Double) -> Double {
+        value.isFinite ? min(30, max(2, value)) : 5
     }
 
     private func loadSettings() {
@@ -276,7 +290,7 @@ final class RunnerStore {
             runnerDirectoryPaths = FileManager.default.fileExists(atPath: candidate.path) ? [candidate.path] : []
         }
         if defaults.object(forKey: Keys.poll) != nil {
-            pollInterval = max(2, defaults.double(forKey: Keys.poll))
+            pollInterval = Self.normalizedPollInterval(defaults.double(forKey: Keys.poll))
         }
         if let raw = defaults.string(forKey: Keys.startMode), let m = StartMode(rawValue: raw) {
             startMode = m
@@ -300,8 +314,11 @@ final class RunnerStore {
     // MARK: - Recent job → GitHub / local logs
 
     /// The local `Worker_*.log` for a job, if it can be matched.
-    func jobWorkerLog(_ job: JobRecord, in runner: RunnerInstance) -> URL? {
-        LogTailer.workerLog(for: job, in: runner.directory)
+    func jobWorkerLog(_ job: JobRecord, in runner: RunnerInstance) async -> URL? {
+        let directory = runner.directory
+        return await Task.detached(priority: .utility) {
+            LogTailer.workerLog(for: job, in: directory)
+        }.value
     }
 
     /// A GitHub URL for the job: the specific Actions run if the `run_id` can be recovered
@@ -625,8 +642,10 @@ final class RunnerStore {
         let interval = pollInterval
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
+                guard self != nil else { return }
                 await self?.refreshAll()
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                do { try await Task.sleep(for: .seconds(interval)) }
+                catch { return }
             }
         }
     }
@@ -637,6 +656,19 @@ final class RunnerStore {
     }
 
     func refreshAll() async {
+        guard !Task.isCancelled else { return }
+        if isRefreshing {
+            await withCheckedContinuation { refreshWaiters.append($0) }
+            return
+        }
+        isRefreshing = true
+        defer {
+            isRefreshing = false
+            let waiters = refreshWaiters
+            refreshWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+
         if executionMode == .dedicatedAccount {
             await refreshRunnerAgent()
             if runnerAgentReady,
@@ -651,18 +683,28 @@ final class RunnerStore {
         }
 
         // Refresh gh auth at most every 30s.
-        if lastAuthCheck == nil || Date().timeIntervalSince(lastAuthCheck!) > 30 {
-            ghAuth = await github.authStatus()
-            lastAuthCheck = Date()
+        if lastAuthCheck == nil || refreshClock().timeIntervalSince(lastAuthCheck!) > 30 {
+            let auth = await github.authStatus()
+            guard !Task.isCancelled else { return }
+            if ghAuth != auth { ghAuth = auth }
+            lastAuthCheck = refreshClock()
         }
 
-        let requests = runners.map {
-            RunnerObservationRequest(runner: $0, includeVersion: $0.installedVersion == nil)
+        let currentTime = refreshClock()
+        let runnerIDs = Set(runners.map(\.id))
+        versionAttempts = versionAttempts.filter { runnerIDs.contains($0.key) }
+        let requests = runners.map { runner in
+            let shouldReadVersion = runner.installedVersion == nil
+                && (versionAttempts[runner.id].map { currentTime.timeIntervalSince($0) >= 60 } ?? true)
+            if shouldReadVersion { versionAttempts[runner.id] = currentTime }
+            return RunnerObservationRequest(runner: runner, includeVersion: shouldReadVersion)
         }
         let observations: [String: RunnerRuntimeObservation]
         do {
             observations = try await backend.observe(requests)
+            guard !Task.isCancelled else { return }
         } catch {
+            guard !Task.isCancelled else { return }
             let message = "Runner service unavailable: \(error.localizedDescription)"
             statuses = Dictionary(uniqueKeysWithValues: runners.map { instance in
                 var status = RunnerLiveStatus()
@@ -714,8 +756,8 @@ final class RunnerStore {
             newStatuses[instance.id] = preserveTransient(status, id: instance.id)
         }
 
-        statuses = newStatuses
-        insights = newInsights
+        if statuses != newStatuses { statuses = newStatuses }
+        if insights != newInsights { insights = newInsights }
         lastRefresh = Date()
     }
 
