@@ -62,14 +62,14 @@ are single observations. Measurements were collected on macOS 27.0, arm64.
 
 | Operation | Elapsed time | Content bytes read |
 | --- | ---: | ---: |
-| Initial parsing of all listener logs | 1,818 ms | 33,558,720 |
-| Unchanged listener refresh | 6.68 ms | 0 |
-| Append a 62-byte job event | 8.49 ms | 574, including checkpoints |
-| Tail 400 lines | 2.03 ms | 65,536 |
-| Merge eight runners without the dashboard cache | 19.14 ms | Not separately counted |
-| Merge eight unchanged runners with the dashboard cache | 10.28 ms | 0 |
-| Parse 10,001 process rows | 19.71 ms | Not applicable |
-| Find a worker log among 1,000 filenames | 307 ms | No file contents |
+| Initial parsing of all listener logs | 2,183 ms | 33,558,720 |
+| Unchanged listener refresh | 15.81 ms | 0 |
+| Append a 62-byte job event | 7.34 ms | 574, including checkpoints |
+| Tail 400 lines | 2.74 ms | 65,536 |
+| Merge eight runners without the dashboard cache | 54.05 ms | Not separately counted |
+| Merge eight unchanged runners with the dashboard cache | 35.78 ms | 0 |
+| Parse 10,001 process rows | 24.79 ms | Not applicable |
+| Find a worker log among 1,000 filenames | 460 ms | No file contents |
 
 Unchanged polling still enumerates and reads file metadata; zero content bytes does not
 mean zero filesystem work. Worker lookup remains a relatively expensive user action, so
@@ -81,12 +81,13 @@ budgets. The byte-count and call-count assertions are the stable regression prot
 
 | Case | Original CPU | Updated CPU | Original sampled RSS | Updated sampled RSS |
 | --- | ---: | ---: | ---: | ---: |
-| Menu closed | 22.02% | 0.60% | 39.61 MiB | 56.75 MiB |
-| Main window requested | 47.71% | 1.13% | 83.78 MiB | 77.31 MiB |
+| Menu closed | 22.90% | 0.97% | 37.64 MiB | 25.77 MiB |
+| Main window requested | 52.89% | 2.30% | 57.02 MiB | 48.72 MiB |
 
-App CPU fell by approximately 97% in both cases on this workload. The closed-menu
-resident-memory sample increased by about 17 MiB, while the window sample decreased.
-This is a CPU improvement with a memory trade-off in the closed-menu case; it is not a
+App CPU fell by approximately 96% with the menu closed and
+96% with the main window requested on this workload. The closed-menu
+resident-memory sample decreased by 11.9 MiB, while the window
+sample decreased by 8.3 MiB. These are short samples, not a
 general claim of reduced memory use. Every final case confirmed eight distinct runner
 directories before starting its timed interval. Exact results are retained in
 [performance-results.json](performance-results.json).
@@ -101,18 +102,17 @@ The harness runs separately signed copies with distinct bundle identifiers and
 temporary settings. It requires a successful version probe from each of the eight
 directories before measurement. The production process scanner must also find all
 eight listeners and the one busy runner. The window case requests the existing main
-window development affordance; it is not a visual UI acceptance test or a measurement
-of all expanded cards, the dashboard, or every log tab.
+window development affordance, which opens the dashboard on the final main base. It
+measures that default window; visual acceptance, expanded job rows, the paused dashboard,
+and every log tab remain outside this measurement.
 
-The original saved app identifies source `22fd1991`; the updated app is a local dirty
-build based on `ceac9087`. The two builds also contain other differences predating this
-audit, so the native results do not isolate every change's individual contribution.
-A separate intermediate build
-already reduced closed-menu CPU to about 0.5% but still used 9–14% with the main window
-requested. Changing the continuous pulses provides an additional comparison for that
-remaining rendering cost; attribution should be treated as an inference from the
-measurements. After the pulse change, the final window case used 1.13% CPU. The
-additional animation stack-sampling attempt timed out.
+The original saved app identifies source `22fd1991`; the updated app is a clean
+build of the performance-only commit `eabe02b1`, based on the same
+main commit. The final comparison excludes the separately open All Runners UI change.
+The service benchmarks, unit tests, Release app and bundled agent build, and native
+CPU measurements were repeated after isolating this commit. The first audit used a
+dirty checkout based on `ceac9087`; its native measurements and source hashes are
+retained separately as `initial_native_app` and `initial_source` in the JSON.
 
 Resident memory is a short-run sample, not a leak assessment. Allocation and caching
 can trade memory for CPU, and a lower CPU result does not establish lower memory use
@@ -127,7 +127,7 @@ in every case.
 | P2 | First parsing and cache rebuilding still scale with retained log contents. Retained events, job history, and a newline-free pending line have no hard byte cap. | Measure larger histories and establish explicit memory and first-load budgets before adding a retention policy. The 12-file limit does not bound file sizes. |
 | P2 | Discovery caps depth but has no budget for the number of visited directories. A wide directory tree can still be expensive. | Add a traversal budget and cancellation, including wide-tree tests. The agent's 200-result cap bounds results, not all traversal work. |
 | P3 | Log caches assume ordinary append or rotation behavior. A rewrite that restores the same metadata, or changes only the middle while growing and preserving both checkpoints, can escape detection. | Document append-only expectations; add stronger verification if edited logs must be supported. Full hashing on every poll would reintroduce the cost removed here. |
-| Coverage | Expanded job rows have one-second relative-time updates; log consoles still perform bounded reads every two seconds. | Profile expanded cards, dashboard live/paused, all console sources, and Reduce Motion with representative job counts. |
+| Coverage | Expanded job rows have one-second relative-time updates; log consoles still perform bounded reads every two seconds. | Profile expanded cards, the paused dashboard, all console sources, and Reduce Motion with representative job counts. The native window case covers the default live dashboard only. |
 | Coverage | Long-run memory, energy, wakeups, slow storage, Intel Macs, minimum-supported macOS, and a signed dedicated-agent session were not profiled. | Run a longer controlled soak and dedicated-account performance checks. Existing agent security and discovery tests remain functional coverage. |
 
 The updater already streams hashing in 1 MiB blocks, and worker run-link extraction

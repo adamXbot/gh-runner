@@ -1,14 +1,6 @@
 {
   "audit_date_utc": "2026-10-02",
-  "limitations": [
-    "Single Mac; short intervals with variable background load",
-    "CPU measures app only, excluding children and compositor",
-    "Window requested; expanded cards and all tabs not profiled",
-    "Closed-menu sampled resident memory increased",
-    "Original saved app and updated checkout have different base commits",
-    "Animation stack-sampling attempt timed out"
-  ],
-  "native_app": {
+  "initial_native_app": {
     "cases": {
       "after_menu_closed": {
         "configured_runners": 8,
@@ -63,59 +55,7 @@
       "macos": "27.0"
     }
   },
-  "schema_version": 1,
-  "service_benchmarks": {
-    "appended_insights": {
-      "appended_bytes": 62,
-      "bytes_read": 574,
-      "median_ms": 8.485417
-    },
-    "cached_matches_uncached": true,
-    "cold_insights": {
-      "bytes_read": 33558720,
-      "median_ms": 1818.431584
-    },
-    "merged_8_runners_cached": {
-      "median_ms": 10.277083
-    },
-    "merged_8_runners_uncached": {
-      "median_ms": 19.137083
-    },
-    "process_10001_rows": {
-      "median_ms": 19.711625
-    },
-    "schema_version": 1,
-    "tail_400_lines": {
-      "bytes_read": 65536,
-      "median_ms": 2.028959
-    },
-    "unchanged_insights": {
-      "bytes_read": 0,
-      "median_ms": 6.675542,
-      "samples_ms": [
-        6.539458,
-        5.123083,
-        7.467,
-        6.593834,
-        8.792125,
-        6.817666,
-        6.772166,
-        5.0495,
-        6.675542
-      ]
-    },
-    "worker_lookup_1000_logs": {
-      "median_ms": 306.890459
-    },
-    "workload": {
-      "log_bytes": 33558720,
-      "process_rows": 10001,
-      "rotations_per_runner": 4,
-      "runners": 8,
-      "worker_logs": 1000
-    }
-  },
-  "source": {
+  "initial_source": {
     "baseline_app_commit": "22fd1991",
     "sha256": {
       "Sources/RunnerMenu/Services/LogTailer.swift": "b816717987dae2771b0658047818ac79c641e607c2975f1cfffadcaf03113bbc",
@@ -131,6 +71,145 @@
     },
     "updated_checkout_base": "ceac9087",
     "updated_tree": "local uncommitted changes"
+  },
+  "limitations": [
+    "Single Mac; short intervals with variable background load",
+    "CPU measures app only, excluding children and compositor",
+    "Window requested; expanded cards and all tabs not profiled",
+    "Resident memory is a short-run sample, not a leak assessment",
+    "Historical initial measurements used a different checkout base; retained separately"
+  ],
+  "native_app": {
+    "cases": {
+      "after_menu_closed": {
+        "configured_runners": 8,
+        "cpu_percent": 0.966,
+        "cpu_seconds": 0.29,
+        "main_window_requested": false,
+        "max_sampled_rss_mb": 25.77,
+        "measurement_seconds": 30.03,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 8
+      },
+      "after_window": {
+        "configured_runners": 8,
+        "cpu_percent": 2.299,
+        "cpu_seconds": 0.69,
+        "main_window_requested": true,
+        "max_sampled_rss_mb": 48.72,
+        "measurement_seconds": 30.02,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 8
+      },
+      "before_menu_closed": {
+        "configured_runners": 8,
+        "cpu_percent": 22.904,
+        "cpu_seconds": 6.88,
+        "main_window_requested": false,
+        "max_sampled_rss_mb": 37.64,
+        "measurement_seconds": 30.04,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 8
+      },
+      "before_window": {
+        "configured_runners": 8,
+        "cpu_percent": 52.891,
+        "cpu_seconds": 15.9,
+        "main_window_requested": true,
+        "max_sampled_rss_mb": 57.02,
+        "measurement_seconds": 30.06,
+        "runners_observed_before_measurement": 8,
+        "startup_version_probes": 14
+      }
+    },
+    "process_scan_validation": {
+      "busy_runners_found": 1,
+      "configured_runners": 8,
+      "listeners_found": 8
+    },
+    "schema_version": 1,
+    "scope": "Synthetic eight-runner fixtures; no GitHub requests or real runner control",
+    "system": {
+      "architecture": "arm64",
+      "macos": "27.0"
+    }
+  },
+  "schema_version": 1,
+  "service_benchmarks": {
+    "appended_insights": {
+      "appended_bytes": 62,
+      "bytes_read": 574,
+      "median_ms": 7.337583
+    },
+    "cached_matches_uncached": true,
+    "cold_insights": {
+      "bytes_read": 33558720,
+      "median_ms": 2182.970125
+    },
+    "merged_8_runners_cached": {
+      "median_ms": 35.779708
+    },
+    "merged_8_runners_uncached": {
+      "median_ms": 54.048209
+    },
+    "process_10001_rows": {
+      "median_ms": 24.785084
+    },
+    "schema_version": 1,
+    "tail_400_lines": {
+      "bytes_read": 65536,
+      "median_ms": 2.739625
+    },
+    "unchanged_insights": {
+      "bytes_read": 0,
+      "median_ms": 15.812125,
+      "samples_ms": [
+        7.955708,
+        15.812125,
+        18.596666,
+        11.168834,
+        30.940708,
+        34.862334,
+        21.474583,
+        13.571125,
+        10.793125
+      ]
+    },
+    "worker_lookup_1000_logs": {
+      "median_ms": 460.372916
+    },
+    "workload": {
+      "log_bytes": 33558720,
+      "process_rows": 10001,
+      "rotations_per_runner": 4,
+      "runners": 8,
+      "worker_logs": 1000
+    }
+  },
+  "source": {
+    "baseline_app_commit": "22fd1991",
+    "build": {
+      "build_number": "2026.1002.1425",
+      "channel": "local",
+      "dirty": false,
+      "marketing_version": "1.0",
+      "timestamp_utc": "2026-10-02T14:25:07Z"
+    },
+    "sha256": {
+      "Sources/RunnerMenu/Services/LogTailer.swift": "b816717987dae2771b0658047818ac79c641e607c2975f1cfffadcaf03113bbc",
+      "Sources/RunnerMenu/Services/ProcessMonitor.swift": "99e06705555007db0de1a6efef60f7135be2f9de15b19c758d6415863aaf1b31",
+      "Sources/RunnerMenu/Services/RunnerDiscovery.swift": "58265be9f90db9c90c5b4894abdbd081500b438c3853511501e9db1f79f020d8",
+      "Sources/RunnerMenu/Services/RunnerExecutionBackend.swift": "f0d4e5f6e18dad85cac24b126dae31be3ddf2f11d722d8171a0444181c0da74b",
+      "Sources/RunnerMenu/Services/RunnerStore.swift": "84ab1ac5b01e82fea2dcfe5e6d11fe30e16e028ced05f56e336a62c39ea1b681",
+      "Sources/RunnerMenu/Views/DashboardView.swift": "0ab36bc65fffb2fc8817db557acac5bd7cfdf0ad0d35ddadd0f968525f1d3a56",
+      "Sources/RunnerMenu/Views/LogConsoleView.swift": "4212db86b4593c3c43b96dec599a3eb588fa68b0ac2b4c8c57b8622e3821b4b4",
+      "Sources/RunnerMenu/Views/RunnerDetailView.swift": "bd82b300141d70676929dcfb50da8503074d4d2452809e7d19e9c636df9bca54",
+      "Sources/RunnerMenu/Views/RunnerRowView.swift": "1ec3d62d161a0f1d8fbcb220a33a04aebc84d9430f5013e9a237b95787e96072",
+      "Sources/RunnerMenu/Views/RunnerWindowView.swift": "7dcb08b7a1f91a892de84a3ef6e59d58e56e516f843fdd5cb8bf9a08a0f2a2f5"
+    },
+    "updated_checkout_base": "22fd1991",
+    "updated_commit": "eabe02b1",
+    "updated_tree": "clean committed performance-only code"
   },
   "verification": {
     "ad_hoc_bundle_signature": "verified",
