@@ -116,7 +116,9 @@ retained separately as `initial_native_app` and `initial_source` in the JSON.
 
 Resident memory is a short-run sample, not a leak assessment. Allocation and caching
 can trade memory for CPU, and a lower CPU result does not establish lower memory use
-in every case.
+in every case. In the initial audit, closed-menu sampled RSS increased by approximately
+17 MiB. Its direction changed on the repeat, so these runs do not establish a memory
+improvement.
 
 ## Remaining findings and coverage gaps
 
