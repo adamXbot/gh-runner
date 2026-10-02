@@ -27,6 +27,12 @@ struct MenuContentView: View {
     }
     @State private var route: Route = .home
     @State private var homeContentHeight: CGFloat = 320
+    private enum HomeView: String, CaseIterable {
+        case all = "All Runners"
+        case selected = "Selected Runner"
+    }
+    @State private var homeView: HomeView = .all
+    @State private var expandedRunnerIDs: Set<String> = []
 
     @ViewBuilder
     var body: some View {
@@ -125,6 +131,7 @@ struct MenuContentView: View {
                 }
                 .buttonStyle(RunnerButtonStyle())
                 .keyboardShortcut(.cancelAction)
+                .help("Back to runners (Esc)")
             }
         }
         .padding(.horizontal, 12)
@@ -178,39 +185,59 @@ struct MenuContentView: View {
         if store.runners.isEmpty {
             emptyState
         } else {
-            ScrollView {
-                VStack(spacing: 8) {
-                    if store.runners.count >= 2 {
-                        batchBar
-                    }
-                    ForEach(store.runners) { instance in
-                        RunnerRowView(
-                            instance: instance,
-                            isSelected: instance.id == store.selectedRunner?.id
-                        )
-                    }
-
-                    if let selected = store.selectedRunner {
-                        Divider().padding(.vertical, 2)
-                        RunnerDetailView(
-                            instance: selected,
-                            showLog: { route = .log },
-                            showUpdates: { route = .updates },
-                            showLabels: { route = .labels }
-                        )
-                    }
+            VStack(spacing: 0) {
+                Picker("Runner view", selection: $homeView) {
+                    ForEach(HomeView.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                .padding(12)
-                .background(GeometryReader { proxy in
-                    Color.clear.preference(key: HomeContentHeightKey.self, value: proxy.size.height)
-                })
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .help("View all runners with expandable details, or focus on one runner")
+
+                ScrollView {
+                    VStack(spacing: 8) {
+                        if store.runners.count >= 2 { batchBar }
+                        if homeView == .all {
+                            AllRunnersView(
+                                expandedRunnerIDs: $expandedRunnerIDs,
+                                showLog: { open(.log, for: $0) },
+                                showUpdates: { open(.updates, for: $0) },
+                                showLabels: { open(.labels, for: $0) }
+                            )
+                        } else {
+                            ForEach(store.runners) { instance in
+                                RunnerRowView(
+                                    instance: instance,
+                                    isSelected: instance.id == store.selectedRunner?.id
+                                )
+                            }
+                            if let selected = store.selectedRunner {
+                                Divider().padding(.vertical, 2)
+                                RunnerDetailView(
+                                    instance: selected,
+                                    showLog: { route = .log },
+                                    showUpdates: { route = .updates },
+                                    showLabels: { route = .labels }
+                                )
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(GeometryReader { proxy in
+                        Color.clear.preference(key: HomeContentHeightKey.self, value: proxy.size.height)
+                    })
+                }
+                // Measure the content because a ScrollView has zero ideal height.
+                .frame(height: min(max(homeContentHeight, 140), 460))
+                .onPreferenceChange(HomeContentHeightKey.self) { homeContentHeight = $0 }
             }
-            // A ScrollView reports a zero ideal height, which would collapse the
-            // MenuBarExtra window to nothing. Measure the content and size the scroll
-            // area to it (floored so it never collapses, capped so it can still scroll).
-            .frame(height: min(max(homeContentHeight, 140), 460))
-            .onPreferenceChange(HomeContentHeightKey.self) { homeContentHeight = $0 }
         }
+    }
+
+    private func open(_ destination: Route, for runner: RunnerInstance) {
+        store.selectedRunnerID = runner.id
+        route = destination
     }
 
     /// Summary + batch actions shown when multiple runners are managed.

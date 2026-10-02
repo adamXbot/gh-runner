@@ -19,6 +19,9 @@ machine (for example, `~/actions-runner`).
   terminal and lets you stop it.
 - **Stats & observability.** Live state, PID, CPU %, memory, uptime (from `ps`), the currently
   running job and recent job history (parsed from `_diag` logs), plus a live log console.
+- **All local runners at a glance.** The menu panel and full window open to an All Runners overview.
+  Each card keeps its status and current job visible when collapsed; expand individual cards or
+  all of them to see stats, recent jobs, and controls. Hover over icon buttons for descriptions.
 - **Start the app at login.** One toggle, via `SMAppService`.
 - **Check for updates, verify the hash, and update.** Compares your installed
   `Runner.Listener --version` against `actions/runner`'s latest release, downloads the macOS package,
@@ -169,6 +172,10 @@ Runtime verification (the app compiles and launches cleanly; exercise the GitHub
 against a throwaway repo):
 
 - [ ] Menu-bar glyph reflects idle / online / busy and updates as the runner changes state.
+- [ ] All Runners shows every monitored runner's state and current job while collapsed.
+      Expand/collapse individual cards and all cards; return from a log or update screen and
+      confirm expansion is preserved. Start/Stop does not toggle a card.
+- [ ] Icon buttons and toolbar menus describe their actions on hover; VoiceOver names them.
 - [ ] Start and stop a runner via button, row control, and Return; confirm `ps` shows it appear/exit.
 - [ ] Detached `run.sh` keeps running after you **Quit** the app; launchd service does too and starts at login.
 - [ ] Register into an existing folder; re-register (replace) to a different repo.

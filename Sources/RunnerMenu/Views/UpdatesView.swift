@@ -71,7 +71,8 @@ struct UpdatesView: View {
             }
             .buttonStyle(RunnerButtonStyle())
             .disabled(checking || applying)
-            .help("Re-check")
+            .help("Check again for updates to \(instance.displayName)")
+            .accessibilityLabel("Check again for runner updates")
         }
     }
 

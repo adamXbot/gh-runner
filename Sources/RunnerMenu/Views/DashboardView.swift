@@ -110,6 +110,7 @@ struct DashboardView: View {
                 .help(live ? "Pause the live log to read it" : "Resume live streaming")
                 Button { copyLog() } label: { Image(systemName: "doc.on.doc") }
                     .buttonStyle(RunnerButtonStyle()).help("Copy combined log").disabled(mergedLines.isEmpty)
+                    .accessibilityLabel("Copy combined log")
             }
             ScrollViewReader { proxy in
                 ScrollView {

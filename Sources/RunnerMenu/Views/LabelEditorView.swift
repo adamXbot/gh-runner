@@ -66,6 +66,7 @@ struct LabelEditorView: View {
                     Spacer()
                     Button { removeLabel(label) } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(RunnerButtonStyle()).foregroundStyle(.secondary)
+                        .help("Remove label \(label)")
                         .accessibilityLabel("Remove label \(label)")
                 }
             }

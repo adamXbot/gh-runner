@@ -273,6 +273,7 @@ struct RunnerDetailView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .disabled(!instance.isConfigured || store.mutationUnavailableReason(for: instance) != nil)
+            .help(store.mutationUnavailableReason(for: instance) ?? "Manage the runner's login service and service logs")
         }
         .padding(8)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
@@ -387,17 +388,20 @@ struct RunnerDetailView: View {
                 Label("Log", systemImage: "text.alignleft")
             }
             .controlSize(.small)
+            .help("View live logs for \(instance.displayName)")
 
             Button { showUpdates() } label: {
                 Label("Updates", systemImage: "arrow.down.circle")
             }
             .controlSize(.small)
+            .help("Check for updates to \(instance.displayName)")
 
             if instance.isConfigured {
                 Button { showLabels() } label: {
                     Label("Labels", systemImage: "tag")
                 }
                 .controlSize(.small)
+                .help("Edit GitHub Actions labels for \(instance.displayName)")
             }
 
             if let url = instance.gitHubURL {
@@ -405,6 +409,7 @@ struct RunnerDetailView: View {
                     Label("GitHub", systemImage: "arrow.up.right.square")
                 }
                 .controlSize(.small)
+                .help("Open \(instance.scopeLabel ?? instance.displayName) on GitHub")
             }
             Spacer()
         }

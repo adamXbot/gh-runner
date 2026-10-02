@@ -1,18 +1,21 @@
 import SwiftUI
 import AppKit
 
-/// A full window: a Dashboard + per-runner detail in the sidebar, options on the right.
+/// A full window with an all-runners overview, dashboard, and per-runner detail.
 struct RunnerWindowView: View {
     @Environment(RunnerStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var selection: SidebarItem? = .dashboard
+    @State private var selection: SidebarItem? = .allRunners
     @State private var detailTab: RunnerDetailTab = .overview
     @State private var logSource: LogConsoleView.Source = .runner
     @State private var followLogs = true
     @State private var showRegister = false
     @State private var showFind = false
+    @State private var expandedRunnerIDs: Set<String> = []
+    @State private var labelsRunner: RunnerInstance?
 
     enum SidebarItem: Hashable {
+        case allRunners
         case dashboard
         case runner(String)
     }
@@ -34,6 +37,8 @@ struct RunnerWindowView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section {
+                    Label("All Runners", systemImage: "rectangle.stack")
+                        .tag(SidebarItem.allRunners)
                     Label("Dashboard", systemImage: "square.grid.2x2")
                         .tag(SidebarItem.dashboard)
                 }
@@ -64,30 +69,30 @@ struct RunnerWindowView: View {
                     }
                     .help("Monitor an existing runner, or register a new one")
                     Button { Task { await store.refreshAll() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
-                        .help("Refresh")
+                        .help("Refresh runners (⌘R)")
                         .keyboardShortcut("r", modifiers: .command)
                     batchMenu
                 }
             }
         } detail: {
             detail
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if let banner = store.banner {
+                        BannerView(message: banner) { store.banner = nil }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                    }
+                }
         }
         .navigationTitle("Runner Menu")
         .frame(minWidth: 820, minHeight: 520)
-        .safeAreaInset(edge: .top) {
-            if let banner = store.banner {
-                BannerView(message: banner) { store.banner = nil }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-            }
-        }
         .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: store.banner)
         .task { await store.refreshAll() }
         .onChange(of: selection) { _, sel in
             if case let .runner(id) = sel { store.selectedRunnerID = id }
         }
         .onChange(of: store.selectedRunnerID) { _, id in
-            if let id, store.runners.contains(where: { $0.id == id }) {
+            if selection != .allRunners, let id, store.runners.contains(where: { $0.id == id }) {
                 selection = .runner(id)
             }
         }
@@ -106,11 +111,45 @@ struct RunnerWindowView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showRegister = false } } }
             }
         }
+        .sheet(item: $labelsRunner) { runner in
+            NavigationStack {
+                LabelEditorView(instance: runner)
+                    .frame(width: 420, height: 460)
+                    .navigationTitle("Labels — \(runner.displayName)")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { labelsRunner = nil }
+                        }
+                    }
+            }
+        }
     }
 
     @ViewBuilder
     private var detail: some View {
         switch selection {
+        case .allRunners:
+            if store.runners.isEmpty {
+                ContentUnavailableView("No runners yet", systemImage: "rectangle.stack",
+                                       description: Text("Use Add Runner to find an existing runner or register a new one."))
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("\(store.runners.count) runners · \(store.runningRunners.count) running · \(store.busyCount) busy")
+                            .font(.callout).foregroundStyle(.secondary)
+                        AllRunnersView(
+                            expandedRunnerIDs: $expandedRunnerIDs,
+                            showLog: { showRunner($0, tab: .logs) },
+                            showUpdates: { showRunner($0, tab: .updates) },
+                            showLabels: { labelsRunner = $0 }
+                        )
+                    }
+                    .frame(maxWidth: 760, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(20)
+                }
+                .navigationTitle("All Runners")
+            }
         case .runner(let id):
             if let runner = store.runners.first(where: { $0.id == id }) {
                 RunnerWindowDetail(instance: runner, tab: $detailTab, logSource: $logSource, followLogs: $followLogs).id(runner.id)
@@ -120,6 +159,12 @@ struct RunnerWindowView: View {
         default:
             DashboardView()
         }
+    }
+
+    private func showRunner(_ runner: RunnerInstance, tab: RunnerDetailTab) {
+        detailTab = tab
+        selection = .runner(runner.id)
+        store.selectedRunnerID = runner.id
     }
 
     private var batchMenu: some View {
@@ -280,6 +325,7 @@ private struct RunnerWindowDetail: View {
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
             }
+            .help("More actions for \(instance.displayName): GitHub, Finder, labels, and registration")
         }
     }
 
