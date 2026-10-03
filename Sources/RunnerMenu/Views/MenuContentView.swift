@@ -27,12 +27,13 @@ struct MenuContentView: View {
     }
     @State private var route: Route = .home
     @State private var homeContentHeight: CGFloat = 320
+    @State private var homeScreenHeight: CGFloat = 900
     private enum HomeView: String, CaseIterable {
         case all = "All Runners"
         case selected = "Selected Runner"
     }
     @State private var homeView: HomeView = .all
-    @State private var expandedRunnerIDs: Set<String> = []
+    @State private var fleetFilter: RunnerFleetFilter?
 
     @ViewBuilder
     var body: some View {
@@ -71,6 +72,10 @@ struct MenuContentView: View {
         }
         .frame(width: 388)
         .animation(RunnerMotion.content(reduceMotion: reduceMotion), value: store.banner)
+        .onAppear {
+            let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+            homeScreenHeight = screen?.visibleFrame.height ?? 900
+        }
         .task { await store.refreshAll() }
     }
 
@@ -114,6 +119,10 @@ struct MenuContentView: View {
             Spacer()
             if route == .home {
                 GHAuthChip(auth: store.ghAuth)
+                if store.runners.count >= 2 {
+                    batchMenu.labelStyle(.iconOnly)
+                        .accessibilityLabel("All runner actions")
+                }
                 Button {
                     Task { await store.refreshAll() }
                 } label: {
@@ -193,87 +202,68 @@ struct MenuContentView: View {
                 .labelsHidden()
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
-                .help("View all runners with expandable details, or focus on one runner")
+                .help("Preview fleet totals, or focus on one runner's activity")
 
-                ScrollView {
-                    VStack(spacing: 8) {
-                        if store.runners.count >= 2 { batchBar }
-                        if homeView == .all {
-                            AllRunnersView(
-                                expandedRunnerIDs: $expandedRunnerIDs,
-                                showLog: { open(.log, for: $0) },
-                                showUpdates: { open(.updates, for: $0) },
-                                showLabels: { open(.labels, for: $0) }
-                            )
-                        } else {
-                            ForEach(store.runners) { instance in
-                                RunnerRowView(
-                                    instance: instance,
-                                    isSelected: instance.id == store.selectedRunner?.id
-                                )
-                            }
-                            if let selected = store.selectedRunner {
-                                Divider().padding(.vertical, 2)
-                                RunnerDetailView(
-                                    instance: selected,
-                                    showLog: { route = .log },
-                                    showUpdates: { route = .updates },
-                                    showLabels: { route = .labels }
-                                )
-                            }
+                if homeView == .all {
+                    AllRunnersView(
+                        selection: $fleetFilter,
+                        compact: true,
+                        showRunner: { runner in
+                            store.selectedRunnerID = runner.id
+                            homeView = .selected
+                        },
+                        showLog: { open(.log, for: $0) }
+                    )
+                    .frame(height: min(fleetFilter == nil ? 398 : 560, availableHomeHeight))
+                } else {
+                    Picker("Runner", selection: runnerSelection) {
+                        ForEach(store.runners) { runner in
+                            Text(runner.displayName).tag(Optional(runner.id))
                         }
                     }
-                    .padding(12)
-                    .background(GeometryReader { proxy in
-                        Color.clear.preference(key: HomeContentHeightKey.self, value: proxy.size.height)
-                    })
+                    .pickerStyle(.menu)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .help("Choose the runner whose activity to show")
+
+                    ScrollView {
+                        if let selected = store.selectedRunner {
+                            RunnerDetailView(
+                                instance: selected,
+                                showLog: { route = .log },
+                                showUpdates: { route = .updates },
+                                showLabels: { route = .labels },
+                                historyLimit: nil
+                            )
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(GeometryReader { proxy in
+                                Color.clear.preference(key: HomeContentHeightKey.self, value: proxy.size.height)
+                            })
+                        }
+                    }
+                    .id(store.selectedRunnerID)
+                    // Use the screen's height instead of burying activity under a
+                    // second runner list in a fixed 460-point viewport.
+                    .frame(height: min(max(homeContentHeight, 220), availableHomeHeight))
+                    .onPreferenceChange(HomeContentHeightKey.self) { homeContentHeight = $0 }
                 }
-                // Measure the content because a ScrollView has zero ideal height.
-                .frame(height: min(max(homeContentHeight, 140), 460))
-                .onPreferenceChange(HomeContentHeightKey.self) { homeContentHeight = $0 }
             }
         }
+    }
+
+    private var runnerSelection: Binding<String?> {
+        Binding(get: { store.selectedRunner?.id }, set: { store.selectedRunnerID = $0 })
+    }
+
+    private var availableHomeHeight: CGFloat {
+        // Header, footer, selectors, and a possible banner remain outside the scroll area.
+        return max(200, homeScreenHeight - 190 - (store.banner == nil ? 0 : 70))
     }
 
     private func open(_ destination: Route, for runner: RunnerInstance) {
         store.selectedRunnerID = runner.id
         route = destination
-    }
-
-    /// Summary + batch actions shown when multiple runners are managed.
-    private var batchBar: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 5) {
-                statPill(store.runners.count, "runners", .secondary)
-                statPill(store.runningRunners.count, "running", .green)
-                if store.busyCount > 0 { statPill(store.busyCount, "busy", .orange) }
-                Spacer()
-                if store.isInFlight("update-all") {
-                    ProgressView().controlSize(.small)
-                }
-                batchMenu
-            }
-            if store.totalCPU > 0 || store.totalMemoryMB > 0 {
-                HStack(spacing: 4) {
-                    Text(String(format: "CPU %.0f%%  ·  %.0f MB total", store.totalCPU, store.totalMemoryMB))
-                        .font(.caption2).foregroundStyle(.tertiary)
-                    Spacer()
-                }
-            }
-        }
-        .padding(.horizontal, 2)
-        .padding(.bottom, 2)
-    }
-
-    private func statPill(_ value: Int, _ label: String, _ color: Color) -> some View {
-        HStack(spacing: 3) {
-            Text("\(value)").font(.caption.weight(.semibold)).foregroundStyle(color)
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 7).padding(.vertical, 2)
-        .background(color.opacity(0.12), in: Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(value) \(label)")
     }
 
     private var batchMenu: some View {

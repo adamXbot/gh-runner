@@ -7,41 +7,26 @@ struct RunnerRowView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let instance: RunnerInstance
     let isSelected: Bool
-    /// In the all-runners overview, the row reveals details in place instead of
-    /// changing the selected runner. Start/Stop remains a separate button.
-    var expansion: Binding<Bool>? = nil
     @State private var confirmUnregister = false
 
     private var status: RunnerLiveStatus { store.status(for: instance) }
     private var accessibilitySummary: String {
         var parts = [instance.displayName, status.state.label]
         if status.busy { parts.append("Busy") }
-        if expansion != nil {
-            if status.busy { parts.append(status.currentJob ?? "Job in progress") }
-            if let phase = store.updatePhases[instance.id] { parts.append(phase.label) }
-            if let error = status.lastError { parts.append(error) }
-        }
         return parts.joined(separator: ", ")
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            Button {
-                if let expansion { expansion.wrappedValue.toggle() }
-                else { store.selectedRunnerID = instance.id }
-            } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    selectionLabel
-                    if expansion != nil { activitySummary }
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Button { store.selectedRunnerID = instance.id } label: {
+                selectionLabel
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(RunnerButtonStyle(surface: .card, cornerRadius: 10))
             .accessibilityLabel(accessibilitySummary)
             .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-            .accessibilityValue(expansion.map { $0.wrappedValue ? "Expanded" : "Collapsed" } ?? "")
-            .help("\(expansion?.wrappedValue == true ? "Hide" : "Show") details for \(instance.displayName)")
+            .help("Show details for \(instance.displayName)")
 
             if status.state != .notConfigured {
                 primaryButton
@@ -76,13 +61,6 @@ struct RunnerRowView: View {
 
     private var selectionLabel: some View {
         HStack(spacing: 10) {
-            if let expansion {
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(expansion.wrappedValue ? 90 : 0))
-                    .accessibilityHidden(true)
-            }
             Image(systemName: status.symbolName)
                 .font(.title3)
                 .foregroundStyle(status.tintColor)
@@ -123,31 +101,6 @@ struct RunnerRowView: View {
 
             statusTrailing
         }
-    }
-
-    private var activitySummary: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(status.state == .running ? (status.busy ? "Running job" : "Idle") : status.state.label)
-                    .foregroundStyle(status.tintColor)
-                if let phase = store.updatePhases[instance.id] {
-                    Text("· \(phase.label)").foregroundStyle(.secondary)
-                } else if store.runnerOperations.contains(instance.id) {
-                    Text("· Working…").foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            if status.busy {
-                Text(status.currentJob ?? "Job in progress")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .help(status.currentJob ?? "Job in progress")
-            }
-            if let error = status.lastError {
-                Text(error).foregroundStyle(.red).lineLimit(2).help(error)
-            }
-        }
-        .font(.caption)
     }
 
     @ViewBuilder

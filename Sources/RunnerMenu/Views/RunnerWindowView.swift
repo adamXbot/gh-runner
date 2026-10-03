@@ -11,8 +11,7 @@ struct RunnerWindowView: View {
     @State private var followLogs = true
     @State private var showRegister = false
     @State private var showFind = false
-    @State private var expandedRunnerIDs: Set<String> = []
-    @State private var labelsRunner: RunnerInstance?
+    @State private var fleetFilter: RunnerFleetFilter?
 
     enum SidebarItem: Hashable {
         case allRunners
@@ -111,18 +110,6 @@ struct RunnerWindowView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showRegister = false } } }
             }
         }
-        .sheet(item: $labelsRunner) { runner in
-            NavigationStack {
-                LabelEditorView(instance: runner)
-                    .frame(width: 420, height: 460)
-                    .navigationTitle("Labels — \(runner.displayName)")
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { labelsRunner = nil }
-                        }
-                    }
-            }
-        }
     }
 
     @ViewBuilder
@@ -133,21 +120,11 @@ struct RunnerWindowView: View {
                 ContentUnavailableView("No runners yet", systemImage: "rectangle.stack",
                                        description: Text("Use Add Runner to find an existing runner or register a new one."))
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("\(store.runners.count) runners · \(store.runningRunners.count) running · \(store.busyCount) busy")
-                            .font(.callout).foregroundStyle(.secondary)
-                        AllRunnersView(
-                            expandedRunnerIDs: $expandedRunnerIDs,
-                            showLog: { showRunner($0, tab: .logs) },
-                            showUpdates: { showRunner($0, tab: .updates) },
-                            showLabels: { labelsRunner = $0 }
-                        )
-                    }
-                    .frame(maxWidth: 760, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(20)
-                }
+                AllRunnersView(
+                    selection: $fleetFilter,
+                    showRunner: { showRunner($0, tab: .overview) },
+                    showLog: { showRunner($0, tab: .logs) }
+                )
                 .navigationTitle("All Runners")
             }
         case .runner(let id):
@@ -285,7 +262,8 @@ private struct RunnerWindowDetail: View {
                     showLog: { tab = .logs },
                     showUpdates: { tab = .updates },
                     showsPrimaryControl: false,
-                    showsActionButtons: false
+                    showsActionButtons: false,
+                    historyLimit: nil
                 )
                 .frame(maxWidth: 680, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
