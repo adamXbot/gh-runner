@@ -8,6 +8,7 @@ struct MenuBarLabel: View {
     var body: some View {
         Image(systemName: symbolName)
             .accessibilityLabel(accessibilityText)
+            .help(accessibilityText)
             .task {
                 // Dev affordance: RUNNERMENU_OPENWINDOW=1 opens the main window at launch.
                 if ProcessInfo.processInfo.environment["RUNNERMENU_OPENWINDOW"] == "1" {

@@ -10,6 +10,11 @@ struct RunnerRowView: View {
     @State private var confirmUnregister = false
 
     private var status: RunnerLiveStatus { store.status(for: instance) }
+    private var accessibilitySummary: String {
+        var parts = [instance.displayName, status.state.label]
+        if status.busy { parts.append("Busy") }
+        return parts.joined(separator: ", ")
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -19,7 +24,7 @@ struct RunnerRowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(RunnerButtonStyle(surface: .card, cornerRadius: 10))
-            .accessibilityLabel("\(instance.displayName), \(status.state.label)\(status.busy ? ", busy" : "")")
+            .accessibilityLabel(accessibilitySummary)
             .accessibilityAddTraits(isSelected ? [.isSelected] : [])
             .help("Show details for \(instance.displayName)")
 
@@ -128,7 +133,7 @@ struct RunnerRowView: View {
             }
             .buttonStyle(RunnerButtonStyle())
             .frame(width: 28, height: 28)
-            .help(foreign ? foreignControlExplanation : "Stop runner")
+            .help(foreign ? foreignControlExplanation : (store.mutationUnavailableReason(for: instance) ?? "Stop \(instance.displayName)"))
             .disabled(!store.canStop(instance))
             .accessibilityLabel("Stop \(instance.displayName)")
         } else {
@@ -140,7 +145,7 @@ struct RunnerRowView: View {
             }
             .buttonStyle(RunnerButtonStyle())
             .frame(width: 28, height: 28)
-            .help(foreign ? foreignControlExplanation : "Start runner")
+            .help(foreign ? foreignControlExplanation : (store.mutationUnavailableReason(for: instance) ?? "Start \(instance.displayName)"))
             .disabled(!store.canStart(instance))
             .accessibilityLabel("Start \(instance.displayName)")
         }

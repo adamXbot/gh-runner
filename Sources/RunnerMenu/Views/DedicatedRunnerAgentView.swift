@@ -193,6 +193,8 @@ struct DedicatedRunnerAgentMenuView: View {
                 }
                 .buttonStyle(RunnerButtonStyle())
                 .disabled(store.isWorkingWithRunnerAgent)
+                .help("Refresh runners discovered by the Runner Agent")
+                .accessibilityLabel("Refresh discovered runners")
             }
             .padding(10)
             .background(.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))

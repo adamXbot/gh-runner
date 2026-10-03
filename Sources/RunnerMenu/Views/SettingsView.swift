@@ -152,7 +152,8 @@ struct SettingsView: View {
                             store.removeDirectory(instance)
                         } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(RunnerButtonStyle())
-                        .help("Remove from list")
+                        .help("Remove \(instance.displayName) from the monitored runners")
+                        .accessibilityLabel("Remove \(instance.displayName) from list")
                     }
                 }
                 Button {

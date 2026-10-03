@@ -152,6 +152,7 @@ struct LogConsoleView: View {
                 NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
             } label: { Image(systemName: "doc.on.doc") }
             .buttonStyle(RunnerButtonStyle()).help("Copy log")
+            .accessibilityLabel("Copy log")
             .disabled(lines.isEmpty)
 
             Button {
@@ -161,7 +162,8 @@ struct LogConsoleView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([LogTailer.diagDirectory(for: runner.directory)])
                 }
             } label: { Image(systemName: "folder") }
-            .buttonStyle(RunnerButtonStyle()).help("Reveal in Finder")
+            .buttonStyle(RunnerButtonStyle()).help("Reveal log in Finder")
+            .accessibilityLabel("Reveal log in Finder")
         }
     }
 
