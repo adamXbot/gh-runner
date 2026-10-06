@@ -16,6 +16,9 @@ AGENT_ID="com.kostarelas.RunnerMenu.agent"
 AGENT_PLIST="com.kostarelas.RunnerMenu.agent.plist"
 SIGN_IDENTITY="${RUNNERMENU_SIGN_IDENTITY:--}"
 
+# Refresh the shared Settings, menu and About code, or verify the committed copy.
+python3 "$ROOT/.project/mac_surfaces.py" sync --root "$ROOT"
+
 echo "==> swift build -c $CONFIG --product $APP_NAME"
 swift build -c "$CONFIG" --product "$APP_NAME"
 echo "==> swift build -c $CONFIG --product $AGENT_NAME"
