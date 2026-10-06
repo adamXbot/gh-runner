@@ -23,8 +23,10 @@ struct RunnerMenuApp: App {
             releaseNotes: RunnerMenuSurface.releaseNotes
         ))
         // A menu bar utility: in the Dock, with a main menu, only while one of
-        // its windows is open. LSUIElement keeps it out of the Dock at launch.
-        SurfaceActivation.shared.start()
+        // its windows is open. LSUIElement keeps it out of the Dock at launch;
+        // without it, as under `swift run`, the app starts as an accessory.
+        let isUIElement = Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? Bool ?? false
+        SurfaceActivation.shared.start(initialPolicy: isUIElement ? nil : .accessory)
     }
 
     var body: some Scene {

@@ -33,9 +33,7 @@ struct GeneralSettingsPane: View {
             }
             .pickerStyle(.segmented)
         }
-        SurfaceMenuBarSection(app: app, preference: menuBar, icons: MenuBarGlyph.icons) {
-            EmptyView()
-        }
+        SurfaceMenuBarSection(app: app, preference: menuBar, icons: MenuBarGlyph.icons)
     }
 }
 
