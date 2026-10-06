@@ -9,13 +9,14 @@ private struct HomeContentHeightKey: PreferenceKey {
     }
 }
 
-/// The root panel shown from the menu bar item.
+/// The root panel shown from the menu bar item. The header and footer are the
+/// standard ones; everything the app does lives in the body between them.
 struct MenuContentView: View {
     @Environment(RunnerStore.self) private var store
-    @Environment(AppUpdater.self) private var appUpdater
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let app = RunnerMenuSurface.app
 
     enum Route: Equatable {
         case home
@@ -39,10 +40,7 @@ struct MenuContentView: View {
     var body: some View {
         if store.onboardingCompleted {
             if store.executionMode == .dedicatedAccount {
-                DedicatedRunnerAgentMenuView(
-                    openWindow: openMainWindow,
-                    openSettings: openSettingsWindow
-                )
+                DedicatedRunnerAgentMenuView(openWindow: openMainWindow)
             } else {
                 configuredContent
             }
@@ -80,31 +78,33 @@ struct MenuContentView: View {
     }
 
     private var onboardingPrompt: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "gearshape.2.fill")
-                .font(.system(size: 34))
-                .foregroundStyle(.tint)
-            Text("Finish setting up Runner Menu")
-                .font(.headline)
-            Text("Choose which macOS account should run jobs and discover any existing GitHub Actions runners.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button {
-                openMainWindow()
-            } label: {
-                Label("Open Setup", systemImage: "arrow.up.forward.app")
-            }
-            .buttonStyle(.borderedProminent)
+        VStack(spacing: 0) {
+            SurfacePopoverHeader(app: app, mark: RunnerMenuSurface.mark)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             Divider()
-            Button(role: .destructive) {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit Runner Menu", systemImage: "power")
+            VStack(spacing: 16) {
+                Image(systemName: "gearshape.2.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.tint)
+                Text("Finish setting up Runner Menu")
+                    .font(.headline)
+                Text("Choose which macOS account should run jobs and discover any existing GitHub Actions runners.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button {
+                    openMainWindow()
+                } label: {
+                    Label("Open Setup", systemImage: "arrow.up.forward.app")
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.return, modifiers: .command)
             }
-            .buttonStyle(RunnerButtonStyle())
+            .padding(24)
+            Divider()
+            footer
         }
-        .padding(24)
         .frame(width: 388)
     }
 
@@ -112,26 +112,25 @@ struct MenuContentView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "gearshape.2.fill")
-                .foregroundStyle(.tint)
-            Text(headerTitle)
-                .font(.headline)
-            Spacer()
             if route == .home {
-                GHAuthChip(auth: store.ghAuth)
-                if store.runners.count >= 2 {
-                    batchMenu.labelStyle(.iconOnly)
-                        .accessibilityLabel("All runner actions")
+                SurfacePopoverHeader(app: app, mark: RunnerMenuSurface.mark) {
+                    HStack(spacing: 8) {
+                        GHAuthChip(auth: store.ghAuth)
+                        if store.runners.count >= 2 {
+                            batchMenu.labelStyle(.iconOnly)
+                                .accessibilityLabel("All runner actions")
+                        }
+                        Button {
+                            Task { await store.refreshAll() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(RunnerButtonStyle())
+                        .help("Refresh (⌘R)")
+                        .keyboardShortcut("r", modifiers: .command)
+                        .accessibilityLabel("Refresh")
+                    }
                 }
-                Button {
-                    Task { await store.refreshAll() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(RunnerButtonStyle())
-                .help("Refresh (⌘R)")
-                .keyboardShortcut("r", modifiers: .command)
-                .accessibilityLabel("Refresh")
             } else {
                 Button {
                     route = .home
@@ -141,6 +140,9 @@ struct MenuContentView: View {
                 .buttonStyle(RunnerButtonStyle())
                 .keyboardShortcut(.cancelAction)
                 .help("Back to runners (Esc)")
+                Text(headerTitle)
+                    .font(.headline)
+                Spacer()
             }
         }
         .padding(.horizontal, 12)
@@ -149,7 +151,7 @@ struct MenuContentView: View {
 
     private var headerTitle: String {
         switch route {
-        case .home: return "Runner Menu"
+        case .home: return app.name
         case .find: return "Runners on This Mac"
         case .register: return "Register New Runner"
         case .updates: return "Runner Updates"
@@ -248,6 +250,8 @@ struct MenuContentView: View {
                     .frame(height: min(max(homeContentHeight, 220), availableHomeHeight))
                     .onPreferenceChange(HomeContentHeightKey.self) { homeContentHeight = $0 }
                 }
+
+                actionBar
             }
         }
     }
@@ -257,8 +261,8 @@ struct MenuContentView: View {
     }
 
     private var availableHomeHeight: CGFloat {
-        // Header, footer, selectors, and a possible banner remain outside the scroll area.
-        return max(200, homeScreenHeight - 190 - (store.banner == nil ? 0 : 70))
+        // Header, footer, selectors, the action bar and a possible banner stay outside the scroll area.
+        return max(200, homeScreenHeight - 230 - (store.banner == nil ? 0 : 70))
     }
 
     private func open(_ destination: Route, for runner: RunnerInstance) {
@@ -287,6 +291,39 @@ struct MenuContentView: View {
             .fixedSize()
             .help("Start, stop, or update all runners at once")
         }
+    }
+
+    /// The app's own actions, above the standard footer: add a runner, and the
+    /// runner update screen for the selected runner.
+    private var actionBar: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Button { route = .find } label: {
+                    Label("Find Runners on This Mac…", systemImage: "magnifyingglass")
+                }
+                Button { route = .register } label: {
+                    Label("Register New Runner…", systemImage: "plus.circle")
+                }
+            } label: {
+                Label("Add", systemImage: "plus")
+            }
+            .fixedSize()
+            .help("Monitor an existing runner, or register a new one")
+
+            Button {
+                store.selectedRunnerID = store.selectedRunner?.id
+                route = .updates
+            } label: {
+                Label("Updates", systemImage: "arrow.down.circle")
+            }
+            .help("Check for runner updates")
+            .disabled(store.selectedRunner == nil)
+
+            Spacer()
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private var emptyState: some View {
@@ -325,72 +362,11 @@ struct MenuContentView: View {
 
     // MARK: - Footer
 
+    /// Open Runner Menu, the Settings gear (⌘,) and Quit (⌘Q).
     private var footer: some View {
-        HStack(spacing: 6) {
-            Menu {
-                Button { route = .find } label: {
-                    Label("Find Runners on This Mac…", systemImage: "magnifyingglass")
-                }
-                Button { route = .register } label: {
-                    Label("Register New Runner…", systemImage: "plus.circle")
-                }
-            } label: {
-                Label("Add", systemImage: "plus")
-            }
-            .help("Monitor an existing runner, or register a new one")
-
-            Button {
-                store.selectedRunnerID = store.selectedRunner?.id
-                route = .updates
-            } label: {
-                Label("Updates", systemImage: "arrow.down.circle")
-            }
-            .help("Check for runner updates (⌘U)")
-            .keyboardShortcut("u", modifiers: .command)
-            .disabled(store.selectedRunner == nil)
-
-            Button {
-                openMainWindow()
-            } label: {
-                Label("Open Window", systemImage: "macwindow")
-            }
-            .help("Open the full window (⌘N)")
-            .keyboardShortcut("n", modifiers: .command)
-
-            Spacer()
-
-            Button {
-                appUpdater.checkForUpdates()
-            } label: {
-                Label("Check for App Updates", systemImage: "arrow.down.app")
-            }
-            // Distinct from the per-runner Updates screen, which updates the
-            // GitHub Actions runner rather than this app.
-            .help(appUpdater.canCheckForUpdates
-                  ? "Check for Runner Menu updates"
-                  : (appUpdater.unavailableReason ?? "Updates unavailable"))
-            .disabled(!appUpdater.canCheckForUpdates)
-
-            Button {
-                openSettingsWindow()
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-            .help("Settings (⌘,)")
-            .keyboardShortcut(",", modifiers: .command)
-
-            Button(role: .destructive) {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit", systemImage: "power")
-            }
-            .help("Quit Runner Menu (⌘Q)")
-            .keyboardShortcut("q", modifiers: .command)
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(RunnerButtonStyle())
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        SurfacePopoverFooter(app: app, openApp: openMainWindow)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
     }
 
     /// Open the main window and force it to the front (accessory apps open it behind).
@@ -404,23 +380,6 @@ struct MenuContentView: View {
             }
             window?.makeKeyAndOrderFront(nil)
             window?.orderFrontRegardless()
-        }
-    }
-
-    /// Open Settings and force it to the front. A menu-bar (`.accessory`) app doesn't
-    /// activate on its own, so `openSettings()` alone opens the window *behind* other
-    /// apps — it looks like "nothing happened". We activate and order it front.
-    private func openSettingsWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        openSettings()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            NSApp.activate(ignoringOtherApps: true)
-            let settingsWindow = NSApp.windows.first { window in
-                let id = window.identifier?.rawValue ?? ""
-                return id.contains("Settings") || window.title == "Runner Menu Settings"
-            }
-            settingsWindow?.makeKeyAndOrderFront(nil)
-            settingsWindow?.orderFrontRegardless()
         }
     }
 }

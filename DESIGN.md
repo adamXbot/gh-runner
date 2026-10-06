@@ -23,16 +23,17 @@ window (⌘,) — not an app window you have to find and manage. Longer flows (r
 are in-panel "screens" with a Back affordance rather than modal sheets, because a menu-bar popover
 is transient and sheets on an `NSPanel` behave poorly.
 
-**Conventions embraced.** Menu-bar accessory idiom; Settings scene at ⌘,; standard shortcuts
-(⌘R refresh, ⌘U updates, ⌘Q quit, Return = primary action, Esc = back); right-click context menus
+**Conventions embraced.** Menu-bar accessory idiom; Settings scene at ⌘, with toolbar tabs; the
+standard About window, Help menu (manual, Keyboard Shortcuts, Welcome) and app menu; standard shortcuts
+(⌘R refresh, ⌘Q quit, Return = primary action, Esc = back); right-click context menus
 that act on the selection; Finder integration (Reveal in Finder); multi-representation copy
 (runner name, repo URL); `SMAppService` login item; light/dark/high-contrast; VoiceOver labels.
 
 **Intentional departures.**
-- **No traditional app menu bar.** A `MenuBarExtra` accessory app has no persistent menu bar; the
-  panel + context menus + Settings scene carry the command model instead. This is the accepted
-  idiom for this app shape (the skill's "real menu bar" rule is satisfied by the status item's
-  panel and menus, not by an empty top menu bar).
+- **A menu bar only while a window is open.** A `MenuBarExtra` accessory app has no persistent
+  menu bar; the panel + context menus + Settings scene carry the command model. While any window is
+  open (the main window, Settings, About, the manual) the app joins the Dock and shows the standard
+  app, File, Edit, View, Window and Help menus, then leaves again when the last window closes.
 - **`gh` CLI as the credential broker.** Rather than a bespoke OAuth flow or a PAT text field
   (entering credentials into an app is exactly what we must not do), the app reuses the user's
   existing `gh` authentication. This is more secure and more Mac-pragmatic.
@@ -66,15 +67,16 @@ Commands are reachable from the panel, from row **context menus**, and via **key
 | Stop runner | Row + detail + context | Return (selected) | only when running |
 | Force stop | Context menu | — | only when running |
 | Add / Register | Footer + empty state | — | needs `gh` auth |
-| Check updates | Footer + detail | ⌘U | needs a selected runner |
+| Check updates | Action bar + detail | — | needs a selected runner |
 | Update now | Updates screen | Return (confirm dialog) | disabled unless hash verifiable (or override) |
 | Open on GitHub | Context + detail | — | needs configured repo |
 | Reveal in Finder | Context menu | — | always |
 | Copy repo URL / runner name | Context menu | — | always |
 | Install/remove launchd service | Detail | — | configured runners |
 | Unregister from GitHub | Context menu | — | configured + repo/org scope |
-| Settings | Footer | ⌘, | always (`SettingsLink`) |
+| Settings | Footer gear | ⌘, | always |
 | Quit | Footer | ⌘Q | always |
+| About, Help, Keyboard Shortcuts | App and Help menus, About button in Settings | ⌘? for shortcuts | always |
 
 Every important action is reachable from a labelled control or a menu — never an unlabeled icon only
 (icons carry `.help()` tooltips and accessibility labels).
@@ -86,8 +88,11 @@ Every important action is reachable from a labelled control or a menu — never 
 - **Status panel** (`MenuBarExtra`, `.window` style, fixed 388 pt width, scrolls vertically).
 - **In-panel screens** (home ⇄ register ⇄ updates ⇄ log) via a `Route` enum + Back button, so nothing
   relies on sheets inside a popover.
-- **Settings window** — the one real window, standard `Settings` scene, ⌘,.
-- No documents, no multi-window: correct for a status utility.
+- **Settings window** — standard `Settings` scene, ⌘,, with General, Runners, Accounts and Updates
+  tabs on the shared surface scaffold.
+- **About, manual and Keyboard Shortcuts** — the shared fixed-size windows, opened from the app and
+  Help menus and from About in Settings.
+- No documents: correct for a status utility.
 
 ---
 

@@ -27,8 +27,13 @@ Build the app bundle with:
 ./build-app.sh
 ```
 
-The app appears in the menu bar rather than the Dock. Set `RUNNERMENU_DOCK=1` while debugging if you
-need a Dock icon.
+The app appears in the menu bar rather than the Dock, and joins the Dock only while one of its
+windows is open. Set `RUNNERMENU_OPENWINDOW=1` while debugging to open the main window at launch.
+
+`Sources/RunnerMenu/MacSurfaces` is a copy of the shared Settings, About, menu and manual code used
+across several macOS apps. Do not edit it here: `just surfaces` (and the build) refresh it, and a
+changed copy fails the build. The in-app manual lives in `Sources/RunnerMenu/Manual`; keep it in
+step with behaviour changes.
 
 ## Making a change
 
