@@ -1,124 +1,78 @@
 import SwiftUI
 import AppKit
 
-struct SettingsView: View {
-    @Environment(RunnerStore.self) private var store
-    @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.openWindow) private var openWindow
+// The Settings window is the shared `SurfaceSettings` scaffold (see
+// RunnerMenuApp): toolbar tabs, General first, Updates last. Each pane here is
+// a set of grouped-form sections. Explanations live behind ⓘ buttons; a caption
+// under a row is reserved for live status and warnings.
 
-    @State private var launchAtLogin = LoginItem.isEnabled
-    @State private var loginStatus = LoginItem.statusDescription
-    @State private var loginError: String?
+/// General: startup, refreshing, recent jobs and the menu bar icon.
+struct GeneralSettingsPane: View {
+    @Environment(RunnerStore.self) private var store
+    let app: SurfaceApp
+    @ObservedObject var menuBar: SurfaceMenuBarPreference
+
+    var body: some View {
+        @Bindable var store = store
+        Section("Startup") {
+            SurfaceLaunchAtLoginRow(app: app)
+        }
+        Section("Refreshing") {
+            Stepper(value: $store.pollInterval, in: 2...30, step: 1) {
+                Text("Refresh every \(Int(store.pollInterval)) seconds")
+            }
+        }
+        Section("Recent jobs") {
+            Picker(selection: $store.jobClickAction) {
+                ForEach(JobClickAction.allCases, id: \.self) { Text($0.label).tag($0) }
+            } label: {
+                SurfaceInfoLabel(
+                    "Clicking a recent job",
+                    info: "Open on GitHub opens the job's Actions run, or the repository's Actions page when the run cannot be found. View local logs reveals the job's Worker log in Finder. The job's context menu offers both."
+                )
+            }
+            .pickerStyle(.segmented)
+        }
+        SurfaceMenuBarSection(app: app, preference: menuBar, icons: MenuBarGlyph.icons) {
+            EmptyView()
+        }
+    }
+}
+
+/// Runners: how they start, where new ones go, and the folders being watched.
+struct RunnerSettingsPane: View {
+    @Environment(RunnerStore.self) private var store
     @State private var discoveryMessage: String?
 
     var body: some View {
         @Bindable var store = store
-        Form {
-            Section("General") {
-                // Drive the login item from the binding's setter (not onChange) so
-                // reverting `launchAtLogin` on failure can't re-enter setLoginItem.
-                Toggle("Open Runner Menu at login", isOn: Binding(
-                    get: { launchAtLogin },
-                    set: { setLoginItem($0) }
-                ))
-                Text(loginStatus).font(.caption).foregroundStyle(.secondary)
-                if let loginError {
-                    Text(loginError).font(.caption).foregroundStyle(.red)
-                }
-
-                Picker("Start runners using", selection: $store.startMode) {
-                    Text("Detached run.sh").tag(StartMode.supervised)
-                    Text("launchd service").tag(StartMode.service)
-                }
-                Text(store.startMode == .service
-                     ? "Installs a launchd LaunchAgent — the runner keeps going after you quit this app and starts at login."
-                     : "Runs ./run.sh detached with nohup — survives quitting the app but isn't managed by launchd.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .opacity(store.executionMode == .currentAccount ? 1 : 0.55)
-
-
-                Stepper(value: $store.pollInterval, in: 2...30, step: 1) {
-                    Text("Refresh every \(Int(store.pollInterval))s")
-                }
-
-                Picker("Clicking a recent job", selection: $store.jobClickAction) {
-                    ForEach(JobClickAction.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                Text(store.jobClickAction == .github
-                     ? "Opens the job's GitHub Actions run (or the repo's Actions page)."
-                     : "Reveals the job's local Worker log in Finder.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section("GitHub CLI") {
-                HStack {
-                    TextField("gh executable", text: $store.ghPath)
-                    Button("Re-check") { Task { await store.forceAuthRecheck() } }
-                }
-                GHAuthChip(auth: store.ghAuth)
-                if let account = store.ghAuth.account {
-                    Text("Signed in as \(account) · scopes: \(store.ghAuth.scopes.joined(separator: ", "))")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if let msg = store.ghAuth.message {
-                    Text(msg).font(.caption).foregroundStyle(.orange)
-                }
-            }
-
-            Section("Execution account") {
-                LabeledContent(
-                    "Runner jobs",
-                    value: store.executionMode == .currentAccount
-                        ? "This account (\(NSUserName()))"
-                        : "Dedicated runner account · read-only"
+        Section("Starting runners") {
+            Picker(selection: $store.startMode) {
+                Text("Detached run.sh").tag(StartMode.supervised)
+                Text("launchd service").tag(StartMode.service)
+            } label: {
+                SurfaceInfoLabel(
+                    "Start runners using",
+                    info: "Detached run.sh runs ./run.sh with nohup: the runner survives quitting Runner Menu, but launchd does not manage it. launchd service installs a LaunchAgent with svc.sh: the runner keeps going after you quit and starts when you log in."
                 )
-                Text(store.executionMode == .currentAccount
-                     ? "Runner processes and workspaces are owned by the currently signed-in account."
-                     : "The signed Runner Agent is used for health checks and discovery. Lifecycle controls remain disabled in this phase.")
+            }
+            .pickerStyle(.segmented)
+            if store.executionMode == .dedicatedAccount {
+                Text("Runners are only monitored in dedicated-account mode; they are not started from here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if store.executionMode == .dedicatedAccount {
-                    LabeledContent("Agent service", value: store.runnerAgentRegistrationState.label)
-                    if let health = store.runnerAgentHealth {
-                        LabeledContent("Connected as", value: "\(health.accountName) · UID \(health.effectiveUserID)")
-                        LabeledContent("Protocol", value: "v\(health.protocolVersion)")
-                    }
-                    if let error = store.runnerAgentError {
-                        Text(error).font(.caption).foregroundStyle(.red)
-                    }
-                    HStack {
-                        if store.runnerAgentRegistrationState == .notRegistered
-                            || store.runnerAgentRegistrationState == .notFound {
-                            Button("Register Agent") { Task { await store.registerRunnerAgent() } }
-                                .disabled(!store.runnerAccountStatus.isReady || store.isWorkingWithRunnerAgent)
-                        }
-                        if store.runnerAgentRegistrationState == .requiresApproval {
-                            Button("Open Login Items") { store.openRunnerAgentSystemSettings() }
-                        }
-                        if store.runnerAgentRegistrationState == .enabled {
-                            Button("Unregister Agent", role: .destructive) {
-                                Task { await store.unregisterRunnerAgent() }
-                            }
-                            .disabled(store.isWorkingWithRunnerAgent)
-                        }
-                        Button("Refresh") { Task { await store.refreshRunnerAgent() } }
-                            .disabled(store.isWorkingWithRunnerAgent)
-                    }
-                }
-                Button("Review Setup…") {
-                    store.reviewOnboarding()
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: RunnerMenuApp.windowID)
-                }
             }
+        }
 
-            if store.executionMode == .currentAccount {
-                Section("New runners") {
-                LabeledContent("Runners folder") {
+        if store.executionMode == .currentAccount {
+            Section("New runners") {
+                LabeledContent {
                     HStack {
                         Text(store.runnersBaseDirectoryPath.isEmpty ? "Not set" : store.runnersBaseDirectoryPath)
                             .font(.caption.monospaced())
                             .foregroundStyle(store.runnersBaseDirectoryPath.isEmpty ? .secondary : .primary)
-                            .lineLimit(1).truncationMode(.middle)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                         Button("Choose…") {
                             if let url = chooseRunnerFolder(title: "Choose a folder to hold new runners", prompt: "Use") {
                                 store.runnersBaseDirectoryPath = url.standardizedFileURL.path
@@ -128,53 +82,65 @@ struct SettingsView: View {
                             Button("Clear") { store.runnersBaseDirectoryPath = "" }
                         }
                     }
+                } label: {
+                    SurfaceInfoLabel(
+                        "Runners folder",
+                        info: "New runners are created inside this folder, named actions-runner-<repo> so they are easy to tell apart. When it is not set, ~/actions-runners is used. A location outside Documents, Desktop and Downloads avoids macOS privacy prompts."
+                    )
                 }
-                Text("New runners default into this folder, named `actions-runner-<repo>` so they're easy to identify. A location outside Documents / Desktop / Downloads avoids macOS privacy prompts.")
-                    .font(.caption).foregroundStyle(.secondary)
-                }
+            }
 
-                Section("Runner folders") {
+            Section("Runner folders") {
                 if store.runners.isEmpty {
-                    Text("No folders added.").font(.caption).foregroundStyle(.secondary)
+                    Text("No folders added.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 ForEach(store.runners) { instance in
-                    HStack {
-                        Image(systemName: instance.isConfigured ? "folder.fill.badge.gearshape" : "folder")
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(instance.displayName).font(.callout)
-                            Text(instance.directory.path)
-                                .font(.caption2.monospaced()).foregroundStyle(.secondary)
-                                .lineLimit(1).truncationMode(.middle)
-                        }
-                        Spacer()
-                        Button(role: .destructive) {
+                    LabeledContent {
+                        SurfaceDestructiveButton(
+                            "Remove…",
+                            gate: .confirm,
+                            question: "Remove \(instance.displayName) from the list?",
+                            consequence: "Runner Menu stops watching this folder. The runner, its registration and its files are not changed.",
+                            confirmTitle: "Remove"
+                        ) {
                             store.removeDirectory(instance)
-                        } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(RunnerButtonStyle())
-                        .help("Remove \(instance.displayName) from the monitored runners")
-                        .accessibilityLabel("Remove \(instance.displayName) from list")
+                        }
+                        .controlSize(.small)
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(instance.displayName)
+                                Text(instance.directory.path)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        } icon: {
+                            Image(systemName: instance.isConfigured ? "folder.fill.badge.gearshape" : "folder")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
-                Button {
-                    if let url = chooseRunnerFolder() { store.addDirectory(url) }
-                } label: {
-                    Label("Add Folder…", systemImage: "plus")
-                }
-                Button {
-                    Task {
-                        let existing = Set(store.runnerDirectoryPaths)
-                        await store.discoverExistingRunners()
-                        let newIDs = Set(store.discoveredRunners.map(\.id)).subtracting(existing)
-                        store.addDiscoveredRunners(withIDs: newIDs)
-                        discoveryMessage = newIDs.isEmpty
-                            ? "No additional runner installations found."
-                            : "Added \(newIDs.count) existing runner\(newIDs.count == 1 ? "" : "s")."
+                HStack {
+                    Button("Add Folder…") {
+                        if let url = chooseRunnerFolder() { store.addDirectory(url) }
                     }
-                } label: {
-                    Label("Discover Existing Runners", systemImage: "magnifyingglass")
+                    Button("Discover Existing Runners") {
+                        Task {
+                            let existing = Set(store.runnerDirectoryPaths)
+                            await store.discoverExistingRunners()
+                            let newIDs = Set(store.discoveredRunners.map(\.id)).subtracting(existing)
+                            store.addDiscoveredRunners(withIDs: newIDs)
+                            discoveryMessage = newIDs.isEmpty
+                                ? "No additional runner installations found."
+                                : "Added \(newIDs.count) existing runner\(newIDs.count == 1 ? "" : "s")."
+                        }
+                    }
+                    .disabled(store.isDiscoveringRunners)
                 }
-                .disabled(store.isDiscoveringRunners)
                 if store.isDiscoveringRunners {
                     ProgressView("Looking for runner installations…")
                         .controlSize(.small)
@@ -183,48 +149,8 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                }
-            }
-
-            Section("About") {
-                LabeledContent("Version", value: appVersion)
-                Link("GitHub Actions Runner releases",
-                     destination: URL(string: "https://github.com/actions/runner/releases")!)
-                    .font(.callout)
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 500, height: 660)
-        .onAppear { refreshLoginItem() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { refreshLoginItem() }
-        }
-        .navigationTitle("Runner Menu Settings")
-        .task {
-            await store.forceAuthRecheck()
-            await store.refreshRunnerAgent()
-        }
-    }
-
-    private var appVersion: String {
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-        return "\(v) (\(b))"
-    }
-
-    private func setLoginItem(_ enabled: Bool) {
-        do {
-            try LoginItem.setEnabled(enabled)
-            loginError = nil
-        } catch {
-            loginError = error.localizedDescription
-        }
-        refreshLoginItem()
-    }
-
-    private func refreshLoginItem() {
-        launchAtLogin = LoginItem.isEnabled
-        loginStatus = LoginItem.statusDescription
     }
 
     private func chooseRunnerFolder(title: String = "Select a runner folder",
@@ -238,5 +164,100 @@ struct SettingsView: View {
         panel.prompt = prompt
         NSApp.activate(ignoringOtherApps: true)
         return panel.runModal() == .OK ? panel.url : nil
+    }
+}
+
+/// Accounts: the GitHub CLI login the app works through, and the macOS account
+/// that runs jobs.
+struct AccountSettingsPane: View {
+    @Environment(RunnerStore.self) private var store
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        @Bindable var store = store
+        Section("GitHub CLI") {
+            LabeledContent {
+                HStack {
+                    TextField("gh executable", text: $store.ghPath)
+                        .labelsHidden()
+                    Button("Re-check") { Task { await store.forceAuthRecheck() } }
+                }
+            } label: {
+                SurfaceInfoLabel(
+                    "gh executable",
+                    info: "The GitHub CLI Runner Menu runs for every GitHub call: sign-in status, repositories, registration tokens, runner lists and releases. A bare name is looked up on the PATH; give a full path when gh lives somewhere unusual."
+                )
+            }
+            LabeledContent("Status") {
+                GHAuthChip(auth: store.ghAuth)
+            }
+            if let account = store.ghAuth.account {
+                Text("Signed in as \(account) · scopes: \(store.ghAuth.scopes.joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let message = store.ghAuth.message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+
+        Section("Execution account") {
+            LabeledContent {
+                Text(store.executionMode == .currentAccount
+                     ? "This account (\(NSUserName()))"
+                     : "Dedicated runner account · read-only")
+            } label: {
+                SurfaceInfoLabel(
+                    "Runner jobs",
+                    info: "This account: runner processes and workspaces belong to the account you are signed in to, with full control. Dedicated runner account: the signed Runner Agent, running as the standard account named runner, answers health checks and discovers its runners; lifecycle controls stay disabled in this phase. Change the choice with Review Setup…."
+                )
+            }
+            if store.executionMode == .dedicatedAccount {
+                LabeledContent("Agent service", value: store.runnerAgentRegistrationState.label)
+                if let health = store.runnerAgentHealth {
+                    LabeledContent("Connected as", value: "\(health.accountName) · UID \(health.effectiveUserID)")
+                    LabeledContent("Protocol", value: "v\(health.protocolVersion)")
+                }
+                if let error = store.runnerAgentError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                HStack {
+                    if store.runnerAgentRegistrationState == .notRegistered
+                        || store.runnerAgentRegistrationState == .notFound {
+                        Button("Register Agent") { Task { await store.registerRunnerAgent() } }
+                            .disabled(!store.runnerAccountStatus.isReady || store.isWorkingWithRunnerAgent)
+                    }
+                    if store.runnerAgentRegistrationState == .requiresApproval {
+                        Button("Open Login Items") { store.openRunnerAgentSystemSettings() }
+                    }
+                    if store.runnerAgentRegistrationState == .enabled {
+                        SurfaceDestructiveButton(
+                            "Unregister Agent…",
+                            gate: .confirm,
+                            question: "Unregister the Runner Agent?",
+                            consequence: "Runner Menu stops monitoring the dedicated account's runners until the agent is registered and approved again. Runner folders and registrations are not changed.",
+                            confirmTitle: "Unregister"
+                        ) {
+                            Task { await store.unregisterRunnerAgent() }
+                        }
+                        .disabled(store.isWorkingWithRunnerAgent)
+                    }
+                    Button("Refresh") { Task { await store.refreshRunnerAgent() } }
+                        .disabled(store.isWorkingWithRunnerAgent)
+                }
+            }
+            Button("Review Setup…") {
+                store.reviewOnboarding()
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: RunnerMenuApp.windowID)
+            }
+        }
+        .task {
+            await store.forceAuthRecheck()
+            await store.refreshRunnerAgent()
+        }
     }
 }

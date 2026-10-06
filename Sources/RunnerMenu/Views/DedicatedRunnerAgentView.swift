@@ -162,60 +162,67 @@ struct DedicatedRunnerAgentView: View {
     }
 }
 
+/// The menu bar panel in dedicated-account mode: the standard header and
+/// footer around the agent's status.
 struct DedicatedRunnerAgentMenuView: View {
     @Environment(RunnerStore.self) private var store
     var openWindow: () -> Void
-    var openSettings: () -> Void
+
+    private let app = RunnerMenuSurface.app
 
     var body: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 9) {
-                Image(systemName: store.runnerAgentReady ? "lock.shield.fill" : "exclamationmark.shield.fill")
-                    .font(.title2)
-                    .foregroundStyle(store.runnerAgentReady ? .green : .orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Dedicated Runner Agent").font(.headline)
-                    Text(store.runnerAgentReady ? "Connected as runner · read-only" : store.runnerAgentRegistrationState.label)
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
+        VStack(spacing: 0) {
+            SurfacePopoverHeader(app: app, mark: RunnerMenuSurface.mark) {
                 if store.isWorkingWithRunnerAgent { ProgressView().controlSize(.small) }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
 
-            HStack {
-                Label("\(store.agentDiscoveredRunners.count) runners discovered", systemImage: "shippingbox")
-                    .font(.callout)
-                Spacer()
-                Button {
-                    Task { await store.refreshAll() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+            VStack(spacing: 14) {
+                HStack(spacing: 9) {
+                    Image(systemName: store.runnerAgentReady ? "lock.shield.fill" : "exclamationmark.shield.fill")
+                        .font(.title2)
+                        .foregroundStyle(store.runnerAgentReady ? .green : .orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Dedicated Runner Agent").font(.headline)
+                        Text(store.runnerAgentReady ? "Connected as runner · read-only" : store.runnerAgentRegistrationState.label)
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                .buttonStyle(RunnerButtonStyle())
-                .disabled(store.isWorkingWithRunnerAgent)
-                .help("Refresh runners discovered by the Runner Agent")
-                .accessibilityLabel("Refresh discovered runners")
+
+                HStack {
+                    Label("\(store.agentDiscoveredRunners.count) runners discovered", systemImage: "shippingbox")
+                        .font(.callout)
+                    Spacer()
+                    Button {
+                        Task { await store.refreshAll() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(RunnerButtonStyle())
+                    .disabled(store.isWorkingWithRunnerAgent)
+                    .help("Refresh runners discovered by the Runner Agent")
+                    .accessibilityLabel("Refresh discovered runners")
+                }
+                .padding(10)
+                .background(.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+
+                Text("Lifecycle controls are disabled until the next agent phase.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Link("How to register a runner manually", destination: URL(string: "https://github.com/adamXbot/gh-runner/blob/main/docs/RUNNER_HARDENING.md")!)
             }
-            .padding(10)
-            .background(.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-
-            Text("Lifecycle controls are disabled until the next agent phase.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Link("How to register a runner manually", destination: URL(string: "https://github.com/adamXbot/gh-runner/blob/main/docs/RUNNER_HARDENING.md")!)
+            .padding(16)
 
             Divider()
-            HStack {
-                Button("Open Window", action: openWindow)
-                Button("Settings", action: openSettings)
-                Spacer()
-                Button("Quit", role: .destructive) { NSApplication.shared.terminate(nil) }
-            }
-            .buttonStyle(RunnerButtonStyle())
+            SurfacePopoverFooter(app: app, openApp: openWindow)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
         }
-        .padding(16)
         .frame(width: 388)
         .task { await store.refreshAll() }
     }

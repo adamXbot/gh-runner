@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// The status-item glyph. Reflects the aggregate state of all runners.
+/// The status-item glyph. Reflects the aggregate state of all runners, in the
+/// glyph family chosen in Settings.
 struct MenuBarLabel: View {
     @Environment(\.openWindow) private var openWindow
     var store: RunnerStore
+    @ObservedObject var menuBar: SurfaceMenuBarPreference
 
     var body: some View {
         Image(systemName: symbolName)
@@ -15,6 +17,10 @@ struct MenuBarLabel: View {
                     openWindow(id: RunnerMenuApp.windowID)
                 }
             }
+    }
+
+    private var glyph: MenuBarGlyph {
+        MenuBarGlyph(rawValue: menuBar.icon) ?? .default
     }
 
     private var aggregate: (running: Bool, busy: Bool, transitioning: Bool) {
@@ -33,10 +39,10 @@ struct MenuBarLabel: View {
             return store.runnerAgentReady ? "lock.shield.fill" : "exclamationmark.shield"
         }
         let a = aggregate
-        if a.busy { return "bolt.horizontal.circle.fill" }
-        if a.running { return "play.circle.fill" }
-        if a.transitioning { return "clock.arrow.circlepath" }
-        return "stop.circle"
+        if a.busy { return glyph.symbol(for: .busy) }
+        if a.running { return glyph.symbol(for: .running) }
+        if a.transitioning { return glyph.symbol(for: .transitioning) }
+        return glyph.symbol(for: .stopped)
     }
 
     private var accessibilityText: String {

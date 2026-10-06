@@ -25,7 +25,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Runner Menu — manage GitHub Actions self-hosted runners.</string>
+    <string>© 2026 Runner Menu contributors</string>
 
     <!-- Sparkle self-update.
 
@@ -46,8 +46,10 @@
     <string></string>
     <key>SUFeedURL</key>
     <string>https://adamxbot.github.io/gh-runner/appcast.xml</string>
+    <!-- Automatic checks stay off until the user turns them on in
+         Settings ▸ Updates; Sparkle must not ask on its own. -->
     <key>SUEnableAutomaticChecks</key>
-    <true/>
+    <false/>
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>
 </dict>

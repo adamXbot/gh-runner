@@ -52,6 +52,9 @@ if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP/Contents/Info.plist" 2>/dev/null || true
 fi
 
+# The in-app manual (Help ▸ Runner Menu Help): bundled so it matches this build.
+cp -R "$ROOT/Sources/RunnerMenu/Manual" "$APP/Contents/Resources/Manual"
+
 plutil -lint "$APP/Contents/Library/LaunchDaemons/$AGENT_PLIST" >/dev/null
 
 # --- Sparkle -----------------------------------------------------------------

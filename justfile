@@ -13,3 +13,8 @@ build config="release": surfaces
 # Run the test suite
 test:
     ./run-tests.sh
+
+# Verify the shared surface copy, then compile the package
+check:
+    python3 .project/mac_surfaces.py check
+    swift build

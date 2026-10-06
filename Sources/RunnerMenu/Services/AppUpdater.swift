@@ -12,33 +12,29 @@ import Sparkle
 /// against `SUPublicEDKey` in Info.plist; ship without that key and the app
 /// happily downloads and installs whatever the feed serves, which for an app
 /// that manages CI hosts is a remote-code-execution channel rather than a
-/// convenience. So an absent or placeholder key disables updating entirely and
-/// says so, instead of degrading to unverified installs.
+/// convenience. So an absent or placeholder key leaves the updater unstarted
+/// and says why, instead of degrading to unverified installs.
 @MainActor
-@Observable
 final class AppUpdater {
-    /// Nil when updating is unavailable — see `unavailableReason`.
-    private let controller: SPUStandardUpdaterController?
+    private let controller: SPUStandardUpdaterController
+    /// Why updating is unavailable, or nil when the updater was started.
     let unavailableReason: String?
 
-    var canCheckForUpdates: Bool { controller != nil }
+    /// Sparkle's updater, which drives the shared Updates pane and the Check
+    /// for Updates… item. While `unavailableReason` is set it was never
+    /// started: it reports that it cannot check and ignores check requests.
+    var updater: SPUUpdater { controller.updater }
 
     init(bundle: Bundle = .main) {
         let key = bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
         let feed = bundle.object(forInfoDictionaryKey: "SUFeedURL") as? String
 
-        switch Self.validate(publicKey: key, feedURL: feed) {
-        case .some(let reason):
-            controller = nil
-            unavailableReason = reason
-        case .none:
-            controller = SPUStandardUpdaterController(
-                startingUpdater: true,
-                updaterDelegate: nil,
-                userDriverDelegate: nil
-            )
-            unavailableReason = nil
-        }
+        unavailableReason = Self.validate(publicKey: key, feedURL: feed)
+        controller = SPUStandardUpdaterController(
+            startingUpdater: unavailableReason == nil,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
     }
 
     /// Returns a human-readable reason updating is unavailable, or nil when the
@@ -62,9 +58,5 @@ final class AppUpdater {
             return "SUFeedURL must be an https URL — refusing to fetch an appcast over an unauthenticated channel."
         }
         return nil
-    }
-
-    func checkForUpdates() {
-        controller?.checkForUpdates(nil)
     }
 }

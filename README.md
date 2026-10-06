@@ -63,8 +63,13 @@ swift test                # run the unit tests
 swift run                 # run straight from the package
 ```
 
-The app has **no Dock icon** — look for its glyph in the menu bar (top-right). Set
-`RUNNERMENU_DOCK=1` in the environment to force a Dock icon while debugging.
+The app has **no Dock icon** of its own — look for its glyph in the menu bar (top-right). It
+appears in the Dock, with a full menu bar, while one of its windows is open, and returns to the
+menu bar when the last window closes. Set `RUNNERMENU_OPENWINDOW=1` in the environment to open the
+main window at launch while debugging.
+
+Help ▸ Runner Menu Help opens the manual bundled with the app (`Sources/RunnerMenu/Manual`), and
+Help ▸ Keyboard Shortcuts (⌘?) lists every shortcut.
 
 The [performance audit](docs/PERFORMANCE_AUDIT.md) records CPU measurements, regression
 coverage, and remaining findings. Run `./run-performance-benchmarks.sh` for repeatable
@@ -88,16 +93,20 @@ synthetic log and process benchmarks.
 3. **Start / stop** — the big button in the detail area, the play/stop button on each row, or Return.
    Choose the start method (detached `run.sh` vs launchd service) in **Settings**.
 4. **Observe** — watch CPU/mem/uptime and the current job; open **Log** for a live tail.
-5. **Update** — **Updates** (⌘U) checks the latest release, shows the SHA-256 it will verify, and
+5. **Update** — **Updates** checks the latest release, shows the SHA-256 it will verify, and
    updates in place.
-6. **Start at login** — toggle in **Settings** (this is the app; use the launchd service to also keep
-   the *runner* alive at login).
+6. **Start at login** — toggle in **Settings ▸ General** (this is the app; use the launchd service to
+   also keep the *runner* alive at login).
 
 ## Architecture
 
 ```
 Sources/RunnerMenu/
-  RunnerMenuApp.swift        @main — MenuBarExtra + Settings scenes, AppDelegate (accessory policy)
+  RunnerMenuApp.swift        @main — MenuBarExtra, main window, Settings, About and Help scenes
+  RunnerMenuSurface.swift    the app's profile for the shared surfaces: wordmark, links, shortcuts, manual
+  MacSurfaces/               shared Settings, About, menu and manual code; refreshed by `just surfaces`,
+                             never edited here
+  Manual/                    the in-app manual, copied into Contents/Resources/Manual by build-app.sh
   Models/
     RunnerConfig.swift       parse .runner (BOM-tolerant); scope repo/org/enterprise
     RunnerInstance.swift     one runner directory
@@ -112,13 +121,14 @@ Sources/RunnerMenu/
     LogTailer.swift          newest _diag log, job start/complete parsing, tail
     RunnerController.swift    start/stop/register/unregister, launchd service, signals
     Updater.swift            check/download/SHA-256 verify/extract; release-body hash parse
-    LoginItem.swift          SMAppService.mainApp wrapper
+    AppUpdater.swift         Sparkle self-update for the app; never starts without a verifiable key
     RunnerStore.swift        @MainActor @Observable hub: polling, actions, settings
   Views/                     OnboardingView, MenuContentView, RunnerRowView, RunnerDetailView,
-                             RegisterRunnerView, UpdatesView, LogConsoleView, SettingsView, …
+                             RegisterRunnerView, UpdatesView, LogConsoleView, SettingsView (the
+                             General, Runners and Accounts panes), …
 Sources/RunnerAgent/         LaunchDaemon executable; authenticated read-only health + discovery
 Sources/RunnerAgentProtocol/ versioned XPC wire models, protocol, peer signing requirements
-build-app.sh                 assemble + ad-hoc sign the .app bundle
+build-app.sh                 refresh the shared surface copy, assemble + ad-hoc sign the .app bundle
 Resources/Info.plist         LSUIElement, bundle id, versions
 ```
 

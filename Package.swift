@@ -35,6 +35,9 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/RunnerMenu",
+            // The in-app manual. `swift run` finds it through Bundle.module;
+            // build-app.sh copies the same folder into Contents/Resources.
+            resources: [.copy("Manual")],
             swiftSettings: [
                 // Pragmatic: use the Swift 5 language mode to avoid strict-concurrency
                 // churn while still building with the Swift 6 toolchain. UI state is
